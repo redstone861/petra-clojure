@@ -30,29 +30,37 @@
           parsed))
 )
 
-(defn get-head [so]
-  (first (filter :head so))
-)
-
-(defn label
-  [so]
-  (:cat (get-head so))
+(defn get-head [cso]
+  "return the (c?)so that heads this cso.
+   the argument must be the RESULT OF MERGE (mrg)."
+  (first (filter :head (:so cso)))
 )
 
 (defn transfer-meta
   "modify (and return) the so such that all necessary information 
   is transferred from the selectional stack, e.g., role."
   [so sel]
-  (assoc so :role (:role sel))
+  (assoc so :role (get sel :role nil) :head (get sel :head false))
+)
+
+(defn label-from-head
+  "given the head so (a map), return a map containing all of the data
+  that will be reflected in the merged cso (the mother)."
+  [head]
+  {:cat (:cat head)
+   :role (:role head)}
 )
 
 (defn mrg
   [sos head l r]
-  (let [sel (concat l [:_] r)
-        merged-raw (apply list sos)
+  {:pre [(seqable? sos)
+         (seqable? l)
+         (seqable? r)]}
+  (let [sel (concat l [{:head true}] r)
+        merged-raw sos
+        ;_1 (println "merging with sel " sel ", merged-raw " merged-raw)
         merged (mapv transfer-meta merged-raw sel)]
-    (print sel)
-    {:head head :cat (:cat head) :so merged})
+    (assoc (label-from-head head) :so merged))
 )
 
 ; set as head: (assoc-in (vec lexed) [# :head] true)
@@ -93,11 +101,12 @@
 (defn unary-pass
   "make all systematically unary atomic nodes CSOs."
   [sos]
+  {:pre [(seqable? sos)]}
   (map
    (fn [so]
      (let [sel (:sel so)]
        (if (= 1 (count sel))
-         (mrg so so [] [])
+         (mrg [so] so [] [])
          so)))
    sos)
 )
@@ -160,11 +169,13 @@
     (pair-equal? satisfies-selection? [match-left match-right] [l r]))
 )
 
-(defn replace-first-by-sel-frame
-  "Given a seq of lexical items, find the first index whose selectional
+(defn greedy-sel-merge
+  "Given a seq `xs` of lexical items, find the indices whose selectional
    frame matches a window in the surrounding context, using the largest
-   possible window first, falling back to smaller ones, then go on to next index.
-   Replace the entire matched window with (mrg window)."
+   possible window first, falling back to smaller ones.
+   Replaces the entire matched window with (mrg window), and returns a list
+   of all possible next workspace states (single merge) from this process.
+   (i.e., returns a list of lists)"
   [xs]
   (let [v (vec xs)
         n (count v)]
@@ -197,15 +208,20 @@
             ;; no window matched at this index -> advance to next index
             (recur (inc i) newvecs)))))))
 
-(defn greedy-mrg
-  "greedily-first merge the first atomic element of the list."
-  [sos]
-  (let [[before nb] (split-with (complement atomic?) sos)
-         head  (first nb)
-         after (rest nb)]
-    [before head after]
-    (filter identity
-            (map (fn []))))
+(defn contains-submap? 
+  [m sub]
+  (every? (fn [[k v]] (= (m k ::not-found) v)) sub)
+)
+
+(defn highest-matching
+  "find the highest descendant (or self) of the cso `root` that matches
+  the specification `spec`, a map, containing key,value pairs to be matched."
+  [root spec]
+  (if (atomic? root) 
+    nil
+    (if (contains-submap? root spec) 
+      root 
+      (first (filter #(contains-submap? % spec) (:so root))))) ; todo
 )
 
 (def lexicon (lex 
@@ -215,13 +231,14 @@
               ["red" A [:_]]
               ["take" V [:_ [N :DO]]]))
 
-(def lexed (lexer ["eat" "apple"] lexicon))
+(def lexed (lexer ["eat" "the" "red" "apple"] lexicon))
 
 (defn -main
   "I don't do a whole lot ... yet."
   [& args]
   (println "Hello, World!")
   (println (psel [:_ :A '([:B :DO])] :L))
-  (entry "eat" V [:_ N])
+  (greedy-sel-merge (unary-pass lexed))
+  ;(entry "eat" V [:_ N])
   ;(mrg 1 2)
 )
