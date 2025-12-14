@@ -30,6 +30,9 @@ features:
 (def ^:const kw-in ::in)
 (def ^:const kw-out ::out)
 
+(def prop-symbols '{in [~kw-location nil] 
+                    label [~kw-label label-preprocessor-macro]}) ;...
+
 (def OBJECTS (atom {}))
 (def ACTOR (atom nil))                                      ; actor key
 
