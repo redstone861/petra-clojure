@@ -47,11 +47,21 @@ features:
   [kw-location location]
   )
 
-(defn def-object [object-key & properties]
-  (swap! OBJECTS assoc object-key (into {} properties))
+(defmacro def-object [object-key properties]
+  (let [pairs (partition 2 clauses)]
+    (doseq [[prop _] pairs]
+      (when-not (contains? (keys prop-symbols) prop)
+        (throw (ex-info "Unknown preposition" {:prep prop}))))
+    `(make-object ~name
+       ~(into {}
+              (map (fn [[p v]] [(prop-symbols p) v]) pairs))))
+) ; this doesn't yet have the object key anywhere i don't think
+
+(defn make-object [obj]
+  (swap! OBJECTS assoc ) ; need to put the key somewhere. also, where does it go? rn it's literally just floating in the OBJECTS root list... i guess this is fine maybe??
   )
 
-(defn def-room [room-key & properties]
+(defn make-room [room-key & properties]
   (apply def-object room-key (conj properties (with-in ROOMS)))
   )
 
