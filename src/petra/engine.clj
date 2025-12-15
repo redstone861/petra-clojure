@@ -30,8 +30,9 @@ features:
 (def ^:const kw-in ::in)
 (def ^:const kw-out ::out)
 
-(def prop-symbols '{in [~kw-location nil] 
-                    label [~kw-label label-preprocessor-macro]}) ;...
+;each key is a DSL symbol for a property, and the value is a function that returns a map of implementation-level properties that should be generated through the use of the DSL prop. For a compile-time prop of e.g. "foo bar", the function at 'foo is called as with arguments [bar]. a single property may generate a map of any size; e.g., a single DSL property may correspond to multiple implementation properties (just return e.g. {:one 1 :two 2}).
+(def prop-symbols {'in (fn [x] {kw-location x}) 
+                   'label (fn [x] {kw-label x})})
 
 (def OBJECTS (atom {}))
 (def ACTOR (atom nil))                                      ; actor key
@@ -50,22 +51,31 @@ features:
   [kw-location location]
   )
 
-(defmacro def-object [object-key properties]
-  (let [pairs (partition 2 clauses)]
-    (doseq [[prop _] pairs]
-      (when-not (contains? (keys prop-symbols) prop)
-        (throw (ex-info "Unknown preposition" {:prep prop}))))
-    `(make-object ~name
-       ~(into {}
-              (map (fn [[p v]] [(prop-symbols p) v]) pairs))))
+(defmacro def-object 
+  ([object-key]
+   `(def-object ~object-key []))
+  ([object-key properties]
+   (let [pairs (partition 2 properties)
+         compiled-key (keyword object-key)
+         compiled-props (into {}
+              (for [[prop raw] pairs]
+                (let [compiler-f (get prop-symbols prop)]
+                  (when-not (contains? prop-symbols prop)
+                    (throw (ex-info "Unknown property"
+                                    {:property prop})))
+                  (compiler-f raw))))]
+     `(make-object
+       ~compiled-key
+       ~compiled-props)))
 ) ; this doesn't yet have the object key anywhere i don't think
 
-(defn make-object [obj]
-  (swap! OBJECTS assoc ) ; need to put the key somewhere. also, where does it go? rn it's literally just floating in the OBJECTS root list... i guess this is fine maybe??
-  )
-
-(defn make-room [room-key & properties]
-  (apply def-object room-key (conj properties (with-in ROOMS)))
+(defn make-object [obj properties]
+;  (swap! OBJECTS assoc ) ; need to put the key somewhere. also, where does it go? rn it's literally just floating in the OBJECTS root list... i guess this is fine maybe??
+)
+  
+(defmacro def-room [room-key properties]
+  (let [with-add (into properties ['in ROOMS])] 
+    `(def-object room-key ~with-add))
   )
 
 (defn set-actor [actor-key]
