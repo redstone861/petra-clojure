@@ -7,13 +7,11 @@
 (def ^:const kw-pre-handler ::pre-handler)
 (def ^:const kw-features ::features)
 
-#_ "
-features:
-::f-vowel-article : print name with /an/ instead of /a/ for :a tell!-token
-::f-no-article : print name with no article, like /God/ instead of /the God/
-"
+;; features:
+;; ::f-vowel-article : print name with /an/ instead of /a/ for :a tell!-token
+;; ::f-no-article : print name with no article, like /God/ instead of /the God/
 
-;(def ^:const kw-contains-local ::contains-local)
+(def ^:const kw-contains-local ::contains-local)
 (def ^:const kw-contains-shared ::contains-shared)
 (def ^:const kw-description-first ::description-first)
 (def ^:const kw-description-detailed ::description-detailed)
@@ -30,10 +28,6 @@ features:
 (def ^:const kw-in ::in)
 (def ^:const kw-out ::out)
 
-;each key is a DSL symbol for a property, and the value is a function that returns a map of implementation-level properties that should be generated through the use of the DSL prop. For a compile-time prop of e.g. "foo bar", the function at 'foo is called as with arguments [bar]. a single property may generate a map of any size; e.g., a single DSL property may correspond to multiple implementation properties (just return e.g. {:one 1 :two 2}).
-(def prop-symbols {'in (fn [x] {kw-location x}) 
-                   'label (fn [x] {kw-label x})})
-
 (def OBJECTS (atom {}))
 (def ACTOR (atom nil))                                      ; actor key
 
@@ -42,91 +36,15 @@ features:
 (def ^:const GLOBALS ::GLOBALS)
 (def ^:const INTANGIBLES ::INTANGIBLES)
 
-(defn object [object-key objects]
-  (object-key objects)
-  )
-
-(defn with-in [location]
-  "returns a feature mapping the location keyword to the given location."
-  [kw-location location]
-  )
-
-(defmacro def-object 
-  ([object-key]
-   `(def-object ~object-key []))
-  ([object-key properties]
-   (let [pairs (partition 2 properties)
-         compiled-key (keyword object-key)
-         compiled-props (into {}
-              (for [[prop raw] pairs]
-                (let [compiler-f (get prop-symbols prop)]
-                  (when-not (contains? prop-symbols prop)
-                    (throw (ex-info "Unknown property"
-                                    {:property prop})))
-                  (compiler-f raw))))]
-     `(make-object
-       ~compiled-key
-       ~compiled-props)))
-) ; this doesn't yet have the object key anywhere i don't think
-
-(defn make-object [obj properties]
-;  (swap! OBJECTS assoc ) ; need to put the key somewhere. also, where does it go? rn it's literally just floating in the OBJECTS root list... i guess this is fine maybe??
-)
-  
-(defmacro def-room [room-key properties]
-  (let [with-add (into properties ['in ROOMS])] 
-    `(def-object room-key ~with-add))
-  )
-
-(defn set-actor [actor-key]
-  (swap! ACTOR actor-key)
-  )
-
-(def-object ROOMS)
-(def-object SHARED)
-(def-object GLOBALS)
-(def-object INTANGIBLES)
-
-(defn with-features [& features-kw-list]
-  [kw-features (apply hash-set features-kw-list)]
-  )
-
-(defn with-handler [handler-fn]
-  [kw-handler handler-fn]
-  )
-
-(defn with-pre-handler [pre-handler-fn]
-  [kw-pre-handler pre-handler-fn]
-  )
-
-(defn with-contains-shared [& shared-keys]
-  [kw-contains-shared (apply hash-set shared-keys)]
-  )
-
-(defn with-label-heads [& heads]
-  [kw-label-heads (apply hash-set heads)]
-  )
-
-(defn with-label-modifiers [& modifiers]
-  [kw-label-modifiers (apply hash-set modifiers)]
-  )
-
-(defn with-description-first [msg]
-  [kw-description-first msg]
-  )
-
-(defn with-description-detailed [msg]
-  [kw-description-detailed msg]
-  )
-
-(defn with-description-function [fun]
-  [kw-description-function fun]
-  )
-
-(defn feature-set? [obj feature]
-  (let [feat (kw-features obj)]
+(defn feature-set? [obj-key feature]
+  (let [obj (obj-key @OBJECTS)
+        feat (kw-features obj)]
     (and feat (feature feat))
     )
+  )
+
+(defn object [object-key objects]
+  (object-key objects)
   )
 
 (defn handler [obj] (kw-handler obj))
@@ -141,6 +59,7 @@ features:
     (case token
       :a (str (if (feature-set? obj ::f-vowel-article) "an " "a ") (o:label obj))
       :the (str (if (feature-set? obj ::f-no-article) "" "the ") (o:label obj))
+      (:A :The) (capitalize (stringify-tell-token token obj))
       nil
       )
   )
@@ -173,6 +92,15 @@ features:
         (str f (msg-line->str r objects))
         )
       (str f))))
+
+(def tell-macro-forms ;todo add this to tell. this will take some work.
+  {'a []
+   'the []
+   'A []
+   'The []
+   '> []
+   }
+)
 
 (defn tell! [& msg]
   (let [lines (split-lines-cr msg)]
@@ -257,36 +185,141 @@ features:
 
 (def CANT-GO-MSG "You can't go that way.")                  ;todo
 
+(defn tell-door-cant-go [door-obj]
+  (tell! :The door-obj " is closed.")
+)
+
 (defn exit-in-direction
   "Takes a direction keyword and some arguments (see design doc),
   returning [dir-key exitfn] where (exitfn) returns the new room or false if no movement should occur."
-  ([dir-key room-key]
-   [dir-key room-key]
-   )
   ;if [atom]: conditional with global flag atom
     ;else [msg]: reject with message (otherwise, default) - never use else w/o if or if-open
   ;with [fun]: function-exit
   ;if-open [door]: conditional with door
   ;never [msg]: reject with message
-  ([dir-key room-key & {if-atom :if else-msg :else with-fun :with if-open-object-key :if-open never-msg :never}]
-    (if if-atom
-      [dir-key #(if @if-atom room-key (tell! (or else-msg CANT-GO-MSG)))]
-      (if with-fun
-        [dir-key #(with-fun room-key)]
-        (if if-open-object-key
-          [dir-key
-           (fn []
-             (if (open? if-open-object-key)
-               room-key
-               (tell! (or else-msg CANT-GO-MSG))))]
-          (if never-msg
-            [dir-key #(tell! never-msg)]
-            [dir-key room-key]))))))
+  [dir-key room-key & {if-atom :if 
+                       else-msg :else 
+                       with-fun :with 
+                       if-open-object-key :if-open 
+                       never-msg :never}]
+  (if if-atom
+    [dir-key #(if @if-atom room-key (tell! (or else-msg CANT-GO-MSG)))]
+    (if with-fun
+      [dir-key #(with-fun room-key)]
+      (if if-open-object-key
+        [dir-key
+         (fn []
+           (if (open? if-open-object-key)
+             room-key
+             (if else-msg 
+               (tell! else-msg) 
+               (tell-door-cant-go if-open-object-key))))]
+        (if never-msg
+          [dir-key #(tell! never-msg)]
+          [dir-key room-key])))))
 
-(defn with-to [& exits]
-  [kw-room-exits (into {} (map (fn [[dir-key & args]] (apply exit-in-direction dir-key args)) exits))]
+(defn with-to [exits]
+   (into {} (map #(apply exit-in-direction %) exits))
   )
 
-(defn with-label [label-string]
-  [kw-label label-string]
+(defn unwrap-symbol [x] ; safe unquoting. handles 'x and (quote x).
+  (if (and (seq? x)
+           (= 'quote (first x)))
+    (second x)
+    x))
+
+(def to-preproc-map ; dsl keys.
+  {'if    :if
+   'or  :else
+   'with  :with
+   'via   :if-open
+   'never :never
+   'north kw-north    
+   'east kw-east
+   'south kw-south
+   'west kw-west
+   'up kw-up
+   'down kw-down
+   'in kw-in
+   'out kw-out})
+
+(defn to-preproc-single ; given single to-spec vector, DSL-translate
+  [exit]
+  (mapv
+    (fn [x]
+      (let [s (unwrap-symbol x)]
+        (get to-preproc-map s x)))
+    exit)
+)
+
+(defn to-preproc ; given vec of to-spec vectors, DSL-translate the directions and keywords
+  [exits]
+  (let [result (mapv to-preproc-single exits)]
+    result)
+)
+
+;each key is a DSL symbol for a property, and the value is a function that returns a map of implementation-level properties that should be generated through the use of the DSL prop. For a compile-time prop of e.g. "foo bar", the function at 'foo is called as with arguments [bar]. a single property may generate a map of any size; e.g., a single DSL property may correspond to multiple implementation properties (just return e.g. {:one 1 :two 2}).
+(def prop-symbols-pre {
+                   ;'in (fn [x] {kw-location x}) ; todo: i don't think we need this. only top-down and side-to-side connections should be necessary?
+                   'label (fn [x] {kw-label x})
+                   'features (fn [fs] {kw-features (apply hash-set fs)})
+                   'handle (fn [f] {kw-handler f})
+                   'pre (fn [f] {kw-pre-handler f})
+                   'noun (fn [heads] {kw-label-heads (apply hash-set heads)})
+                   'adj (fn [mods] {kw-label-modifiers (apply hash-set mods)})
+                   'fdesc (fn [x] {kw-description-first x})
+                   'desc (fn [s] {kw-description-detailed s})
+                   'desc-fn (fn [f] {kw-description-function f})
+                   'share (fn [keys] {kw-contains-shared (apply hash-set keys)})
+                   'contains (fn [keys] {kw-contains-local (apply hash-set keys)})
+                   'to (fn [exits] {kw-room-exits (to-preproc exits)})}) ; needs postproc
+
+(def prop-keys-post {
+                     kw-room-exits (fn [processed] (with-to processed))
+                     })
+
+(defmacro def-object
+  ([object-key & properties]
+   {:pre [(even? (count properties))]}
+   (let [pairs (partition 2 properties)
+         compiled-key (keyword object-key)
+         compiled-props (into {}
+              (for [[prop raw] pairs]
+                (let [compiler-f (get prop-symbols-pre prop)]
+                  (when-not (contains? prop-symbols-pre prop)
+                      (throw (ex-info "Unknown property"
+                                      {:property prop})))
+                  (compiler-f raw))))]
+     `(make-object
+       ~compiled-key
+       ~compiled-props)))
+) ; this doesn't yet have the object key anywhere i don't think
+
+(defn postprocess-props [properties]
+  (reduce-kv (fn [new-m k v]
+               (assoc new-m k ((get prop-keys-post k identity) v))) ; postprocess (or, if no key exists, ->)
+             {} ;; Initial empty map
+             properties))
+
+(defn make-object [obj properties]
+  (swap! OBJECTS assoc obj (postprocess-props properties)) ; need to put the key somewhere. also, where does it go? rn it's literally just floating in the OBJECTS root list... i guess this is fine maybe??
+)
+  
+;; (defmacro def-room [room-key properties]
+;;   (let [with-add (into properties ['in ROOMS])] 
+;;     `(def-object room-key ~with-add))
+;;   )
+
+(defn set-actor [actor-key]
+  (swap! ACTOR actor-key)
   )
+
+(def-object ROOMS)
+(def-object SHARED)
+(def-object GLOBALS)
+(def-object INTANGIBLES)
+
+(def-object :green-door label "Green Door" features [])
+
+(def-object :the-room label "The Room" to [[north ::red-room via :green-door]
+                                      [south ::green-hallway never "The Green Hallway is forbidden."]])
