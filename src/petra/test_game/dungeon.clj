@@ -1,7 +1,7 @@
-(ns petra.dungeon
+(ns petra.test-game.dungeon
   "A test dungeon: exercises the engine's surface, not a game."
-  (:require [petra.engine :as engine :refer [object room]]
-            [petra.handlers :as h]))
+  (:require [petra.engine.core :as engine :refer [object room]]
+            [petra.test-game.handlers :as h]))
 
 (def CYCLOPS-DEAD (atom false))
 

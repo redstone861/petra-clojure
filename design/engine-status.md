@@ -6,12 +6,12 @@
 
 Petra is a text-adventure engine in Clojure. Two halves:
 
-1. **The engine** (`src/petra/engine.clj`) — objects, rooms, containment,
+1. **The engine** (`src/petra/engine/core.clj`) — objects, rooms, containment,
    descriptions, event dispatch, and the handler chain that decides who responds
    to the player's input. Its lineage is Infocom's ZIL, via
    `design/Learning_ZIL_Steven_Eric_Meretzky_1995.pdf`.
 
-2. **The parser** (`src/petra/syntactic.clj`) — the actual idea, and the reason
+2. **The parser** (`src/petra/engine/syntactic.clj`) — the actual idea, and the reason
    this isn't just a ZIL port. Instead of ZIL's flat syntax file
    (`<SYNTAX GIVE OBJECT TO OBJECT = V-GIVE>`), verbs carry real **selectional
    frames** on their lexical entries, and parsing is Merge: `entry`/`psel` build
@@ -36,9 +36,28 @@ like they're programming as little as possible. The DSL should read as its own
 language, and the engine should never make an author bookkeep something it can
 work out itself.
 
-`src/petra/dungeon.clj` and `src/petra/handlers.clj` are **test fixtures**, not
+`src/petra/test_game/dungeon.clj` and `.../handlers.clj` are **test fixtures**, not
 game content. There is no dungeon that isn't a test dungeon. Rewrite them freely
 to exercise new engine surface.
+
+## Layout
+
+    src/petra/core.clj      the runner: boots a game named on the command line.
+                            project.clj's :main. Knows no game -- it resolves one
+                            by namespace at runtime.
+    src/petra/engine/       the engine
+      core.clj              objects, containment, describers, dispatch, the turn
+      text.clj              every line of English the engine can print
+      macros.clj            the `handler` macro
+      syntactic.clj         the Merge parser
+      parser.clj            stub: will drive syntactic and hand turn! a verb
+    src/petra/test_game/    a test game, not content -- rewrite freely
+      game.clj              def-game: the head of the game, pure data
+      dungeon.clj  handlers.clj
+    dev/                    scratch.clj (harness), demo.clj (playthrough)
+
+Directory `test_game`, namespace `petra.test-game.*` — Clojure munges hyphens to
+underscores in paths, so the two must differ.
 
 ## What the engine has now
 
@@ -49,7 +68,7 @@ to exercise new engine surface.
 | Containment | parent's `::contains-local` set is authoritative; location is derived. `contents` `location-of` `in?` `ultimately-in?` `room-of` `see-inside?` `visible-descendants` `lit?` `move!` `remove!` |
 | Features | a set of keywords; authored as bare symbols — `features [lit open]` |
 | Output | `tell!` with `:a :the :A :The :>>` tokens; `indefinite-article` infers a/an from the label |
-| Text | all engine prose lives in `src/petra/text.clj` as frames with `{{named slots}}`; `say`/`fill`/`merge-frames!` |
+| Text | all engine prose lives in `src/petra/engine/text.clj` as frames with `{{named slots}}`; `say`/`fill`/`merge-frames!` |
 | Describers | `describe-object` `describe-contents` `describe-room` `look!`; brief/verbose/superbrief |
 | Events | `::on {event fn}` map, open to game-defined namespaced events; `notify!` `listener` |
 | Dispatch | `perform!` runs actor → room → pre-action → indirect → direct → verb default, and returns whether anything consumed the input |
@@ -114,6 +133,42 @@ Everything the engine calls out to takes **one** argument: the turn context
   `swap!`s that bypassed the closed list, and bought visibility only for handlers
   that skip the `handler` macro — which doesn't destructure it anyway.
 
+- **The actor's start position is stated in ONE place — the config's `start` — and
+  the author never puts the actor into the world.** `boot!` places it. Asking the
+  author to also declare it structurally (`contains [::you]`) forced the engine to
+  interpret what "in the start room" means: held by the room? by a chair in it? and
+  the answer is going to change — the actor may end up in local-globals — which is
+  an implementation matter no author should have to hold an opinion about, still
+  less revise. So `boot!` requires the actor to be held by *nothing*, and errors if
+  it finds it placed.
+
+  `boot!` runs one pass over the containment tree (`parent-index`) answering two
+  questions at once: is the actor unplaced, and is anything held by two parents.
+  `move!`/`remove!` preserve the one-parent invariant but `contains` in a
+  definition cannot, and two rooms both listing an object would otherwise show up
+  as something that teleports depending on which scan won.
+
+  Consequence: `boot!` is once-only on a fresh world. Booting twice throws, which
+  is right — restarting means rebuilding the world, not re-booting a used one.
+
+- **`boot!` does not `goto!`, so no `ev-leave`/`ev-enter` fire at startup.**
+  Beginning somewhere is not arriving there, and firing either on a room you never
+  left or entered would be a lie. ZIL's GO did a LOOK, not a GOTO. Only `look!`
+  runs. (Consequence: the "is `start` a room?" check `goto!` used to provide for
+  free had to be written out explicitly, or a `start` naming an object surfaced as
+  a vaguer complaint about the actor's position.)
+
+- **A game is data, and says nothing about being run.** `def-game` compiles to a
+  `CONFIG` map in the game's own namespace; the game folder holds no `-main`, no
+  boot call and no reference to the runner, so dependencies point runner → game →
+  engine and never back. Two configs, answering different questions: the *game's*
+  config is what the game IS (title, author, actor, starting room), while the
+  *run's* options are how this run is set up (which game, where saves go) and live
+  in `petra.core`. Config keys are engine keywords because they are universal
+  behaviours the engine interprets, but they're authored as bare symbols like
+  every other property in the DSL — extend `config-symbols` as more turn out to be
+  universal.
+
 - **Where the engine ends: the engine owns what its data model ENTAILS; the game
   owns what the data model leaves open.** Petra commits to a classic Connected
   Rooms layout — rooms holding objects, movement between them, `::exits`,
@@ -122,13 +177,18 @@ Everything the engine calls out to takes **one** argument: the turn context
   of the commitment `def-room` makes on the write side, and `goto!`'s ordering is
   a mechanism guarantee rather than a preference. Both are engine.
 
-  It comes out as three layers, and the middle one already exists:
+  It comes out as two* layers, with a third one somewhere in between (text):
 
   | layer | owns | e.g. |
   |---|---|---|
-  | `engine.clj` | what the data model entails | describer structure, brief/verbose/first-visit, `goto!`'s ordering |
+  | `engine/core.clj` | what the data model entails | describer structure, brief/verbose/first-visit, `goto!`'s ordering |
   | `text.clj` | the wording | `::contents-listing`, `::too-dark`, `::died` |
   | game / lexicon | bindings and content | which words mean "look", which rooms exist |
+
+  At its simplest, the distinction is between the engine and the author's game. 
+  There's also the text which the engine prints, which will fundamentally stay 
+  similar across games because of what the engine expects from it, but is worth
+  separating because an authored game might change its style. 
 
   There is **no fourth "substrate" layer coming**, and the describers are not
   destined to leave. ZIL's substrate/game split was not an architectural
@@ -302,10 +362,8 @@ the world definitions on load.
 - `lein check` is clean apart from one pre-existing reflection warning at
   `syntactic.clj:130` (`.indexOf` on an untyped target).
 
-- `src/petra/world.clj` and `src/petra/syntax.clj` are empty namespaces;
-  `project.clj` still points `:main` at `petra.world`. `src/petra/#core.clj#` is
-  an Emacs autosave and should be gitignored along with `target/`, `.lsp/`,
-  `.clj-kondo/`, `.nrepl-port`.
+- `lein run` works, and `lein run <game-ns>` boots any game. `petra.core` has no
+  compile-time require of any world.
 
 ## Running it
 

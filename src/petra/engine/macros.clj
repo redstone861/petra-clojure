@@ -1,4 +1,4 @@
-(ns petra.macros)
+(ns petra.engine.macros)
 
 (defmacro handler
   "define a fn the engine can call out to, with the turn context destructured

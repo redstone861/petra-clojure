@@ -1,4 +1,4 @@
-(ns petra.text
+(ns petra.engine.text
   "Every line of English the engine itself can print. Edit this file to change the
   game's voice; engine.clj holds no player-facing prose of its own.
 
@@ -27,6 +27,9 @@
   {;; --- movement --------------------------------------------------------------
    ::cant-go   "You can't go that way."
    ::door-shut "{{The door}} is closed."
+
+   ;; --- starting and ending --------------------------------------------------
+   ::banner "{{title}}\nby {{author}}"
 
    ;; --- the end ---------------------------------------------------------------
    ;; printed after whatever message was passed to `die!`

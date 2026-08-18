@@ -4,9 +4,9 @@
 ;;
 ;;   lein run -m clojure.main dev/demo.clj
 
-(require '[petra.engine :as e]
-         '[petra.text :as t])
-(refer 'petra.engine :only '[object room])
+(require '[petra.engine.core :as e]
+         '[petra.engine.text :as t])
+(refer 'petra.engine.core :only '[object room def-game])
 
 ;; ---------------------------------------------------------------------------
 ;; verbs
@@ -104,7 +104,7 @@
       label "Gatehouse"
       features [lit]
       desc "A roofless stone gatehouse. The rain has got at everything. An arch opens north."
-      contains [::lantern ::key ::sack]
+      contains [::lantern ::key ::sack]                     ; NOT ::you -- boot! places the actor
       on {leave (fn [_] (e/tell! "The gate groans on its hinges as you pass." :>>))}
       to [[north ::hall]])
 
@@ -175,9 +175,15 @@
         (println "   -- over; a main loop would break out of the loop here --"))
       st)))
 
-(e/set-actor! ::you)
-(println "\n================ PETRA ================")
-(e/goto! ::gatehouse)
+;; what the game IS -- the same declaration a game folder would hold
+(def-game
+  title  "The Gatehouse"
+  author "a demo"
+  actor  ::you
+  start  ::gatehouse)
+
+(println)
+(e/boot! CONFIG)
 
 (cmd "take lantern"  v-take :dir ::lantern)
 (cmd "drop lantern"  v-drop :dir ::lantern)

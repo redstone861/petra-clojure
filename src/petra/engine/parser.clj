@@ -1,5 +1,5 @@
-(ns petra.parser
-  (:require [petra.engine :as engine]))
+(ns petra.engine.parser
+  (:require [petra.engine.core :as engine]))
 
 (defn pkg-parse
   "package a parse result into the shape perform! takes, so that a parse can be
@@ -12,7 +12,7 @@
 (defn parse
   "Big shit parse function. Returns (pkg-parse a di io)."
   [input]
-  ;; TODO: drive petra.syntactic -- lex, then search the merge space, then read
+  ;; TODO: drive petra.engine.syntactic -- lex, then search the merge space, then read
   ;; the verb off the root and the objects off the theta-roles (:DO, :IO) with
   ;; syntactic/highest-matching.
   )

@@ -5,9 +5,9 @@
 ;;
 ;;   lein run -m clojure.main dev/scratch.clj
 
-(require 'petra.dungeon 'petra.engine 'petra.text)
-(in-ns 'petra.engine)
-(alias 'd 'petra.dungeon)
+(require 'petra.test-game.dungeon 'petra.engine.core 'petra.engine.text)
+(in-ns 'petra.engine.core)
+(alias 'd 'petra.test-game.dungeon)
 
 (def fails (atom 0))
 (defn chk [label expected actual]
@@ -106,7 +106,7 @@
 (swap! OBJECTS assoc-in [::d/you kw-handler] (fn [_] (die! "The floor gives way.")))
 (println (clojure.string/replace (with-out-str (turn! (fn [_] ::handled)))
                                  #"(?m)^" "  | "))
-(set-frames! petra.text/FRAMES)
+(set-frames! petra.engine.text/FRAMES)
 (swap! OBJECTS update ::d/you dissoc kw-handler)
 
 (println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
@@ -119,7 +119,7 @@
 (def log (atom []))
 (set-actor! ::d/you)
 (move! ::d/you ::d/god-kingdom)
-(set-frames! petra.text/FRAMES)
+(set-frames! petra.engine.text/FRAMES)
 
 ;; watch the sequence, and prove each step sees what it should
 (swap! OBJECTS assoc-in [::d/god-kingdom kw-on ev-leave]
@@ -190,5 +190,75 @@
     (chk "open door yields a room" ::d/cellar dest)
     (with-out-str (goto! dest))
     (chk "and goto! took us there" ::d/cellar (room-of ::d/you))))
+
+(println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
+
+
+;; ---------------------------------------------------------------------------
+;; boot
+;; ---------------------------------------------------------------------------
+
+(require 'petra.test-game.game)
+(alias 'g 'petra.test-game.game)
+
+(defn- why "[message data] for the ex-info f throws, or [:no-throw nil]." [f]
+  (try (f) [:no-throw nil]
+       (catch clojure.lang.ExceptionInfo e [(ex-message e) (ex-data e)])))
+
+(println "\n=== the author never places the actor; boot! does ===")
+(remove! ::d/you)                                        ; undo the wandering above
+(clear-feature ::d/you ::f-touched)                      ; ...including its move! bookkeeping
+(chk "the actor starts held by nothing" nil (location-of ::d/you))
+(chk "nothing is in two places at once" {} (containment-problems))
+(with-out-str (boot! g/CONFIG))
+(chk "boot! put it where the config says" ::d/god-kingdom (location-of ::d/you))
+(chk "and made it the actor" ::d/you @ACTOR)
+(chk "seating the actor disturbed nothing" false (feature-set? ::d/you ::f-touched))
+
+(println "\n=== place! is move! without the bookkeeping ===")
+(make-object ::pebble {kw-label "pebble"})
+(place! ::pebble ::d/aqua-room)
+(chk "place! relocates" ::d/aqua-room (location-of ::pebble))
+(chk "...and notes nothing" false (feature-set? ::pebble ::f-touched))
+(move! ::pebble ::d/god-kingdom)
+(chk "move! relocates too" ::d/god-kingdom (location-of ::pebble))
+(chk "...and notes the disturbance" true (feature-set? ::pebble ::f-touched))
+(chk "both leave exactly one parent" 1 (count (get (parent-index) ::pebble)))
+(remove! ::pebble)
+
+(println "\n=== an author who places the actor by hand is told off ===")
+(let [[msg data] (why #(boot! g/CONFIG))]              ; still placed from the boot above
+  (chk "already placed -> throws" "the actor is already placed in the world" msg)
+  (chk "and names who is holding it" [::d/god-kingdom] (:held-by data)))
+(chk "so boot! is once-only, on a fresh world" true (some? (location-of ::d/you)))
+
+(println "\n=== the one pass also catches the invariant `contains` can break ===")
+(remove! ::d/you)
+(make-object ::twofer {kw-label "twofer"})                ; deliberately listed by two rooms
+(swap! OBJECTS update-in [::d/god-kingdom kw-contains-local] (fnil conj #{}) ::twofer)
+(swap! OBJECTS update-in [::d/aqua-room kw-contains-local] (fnil conj #{}) ::twofer)
+(chk "both parents spotted" #{::d/god-kingdom ::d/aqua-room}
+     (get (containment-problems) ::twofer))
+(chk "boot! refuses" "objects held by more than one parent"
+     (first (why #(boot! g/CONFIG))))
+(swap! OBJECTS update-in [::d/god-kingdom kw-contains-local] disj ::twofer)
+(swap! OBJECTS update-in [::d/aqua-room kw-contains-local] disj ::twofer)
+(chk "clean again" {} (containment-problems))
+
+(println "\n=== bad config ===")
+(chk "no actor" "game config has no `actor`" (first (why #(boot! {::start ::d/god-kingdom}))))
+(chk "no start" "game config has no `start`" (first (why #(boot! {::actor ::d/you}))))
+(chk "start names an object, not a room" "game `start` is not a room"
+     (first (why #(boot! {::actor ::d/you ::start ::d/rusty-pail}))))
+
+(println "\n=== beginning somewhere is not arriving there ===")
+(def boot-seen (atom []))
+(remove! ::d/you)
+(swap! OBJECTS assoc-in [::d/god-kingdom kw-on ev-enter] (fn [_] (swap! boot-seen conj :enter)))
+(swap! OBJECTS assoc-in [::d/god-kingdom kw-on ev-leave] (fn [_] (swap! boot-seen conj :leave)))
+(with-out-str (boot! g/CONFIG))
+(chk "no ev-enter, no ev-leave" [] @boot-seen)
+(swap! OBJECTS update ::d/god-kingdom update kw-on dissoc ev-enter)
+(swap! OBJECTS update ::d/god-kingdom update kw-on dissoc ev-leave)
 
 (println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))

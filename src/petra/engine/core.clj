@@ -1,6 +1,6 @@
-(ns petra.engine
+(ns petra.engine.core
   (:require [clojure.string :as string]
-            [petra.text :as text]))
+            [petra.engine.text :as text]))
 
 ;; ---------------------------------------------------------------------------
 ;; property keys
@@ -123,6 +123,31 @@
            (when (contains? (get m kw-contains-local) k) parent-k))
          objects)))
 
+(defn parent-index
+  "child key -> the set of every parent whose ::contains-local holds it. one pass
+  over the whole containment tree; order doesn't matter."
+  ([] (parent-index @OBJECTS))
+  ([objects]
+   (reduce (fn [acc [parent-k m]]
+             (reduce (fn [a child] (update a child (fnil conj #{}) parent-k))
+                     acc
+                     (get m kw-contains-local)))
+           {}
+           objects)))
+
+(defn containment-problems
+  "every key held by more than one parent, as {key #{parents}}. empty when the
+  world is well formed.
+
+  move!/remove! preserve the one-parent invariant, but `contains` in a definition
+  cannot -- nothing stops two rooms both listing the same object, and the symptom
+  would be an object that teleports depending on which scan won.
+
+  returns data rather than throwing, so it's usable from the repl; `boot!` is what
+  turns a non-empty result into an error."
+  ([] (containment-problems (parent-index)))
+  ([index] (into {} (filter (fn [[_ parents]] (> (count parents) 1)) index))))
+
 (defn in?
   "true if k is DIRECTLY held by k-in (ZIL's IN?)."
   ([k k-in] (in? k k-in @OBJECTS))
@@ -193,22 +218,39 @@
 (defn- conj-child [objects parent-k k]
   (update-in objects [parent-k kw-contains-local] (fnil conj #{}) k))
 
+(defn- relocate
+  "the containment half of place!/move!: k out of wherever it was, into k-to."
+  [objects k k-to]
+  (let [from (location-of k objects)]
+    (cond-> objects
+      from (disj-child from k)
+      true (conj-child k-to k))))
+
+(defn place!
+  "put k into k-to and record nothing else about it. one swap!, so the one-parent
+  invariant is never observably broken.
+
+  this is the engine's own placement primitive, for establishing a world rather
+  than acting in one -- `boot!` uses it to seat the actor. game code almost always
+  wants `move!` instead, which additionally notes that k has been disturbed."
+  [k k-to]
+  (swap! OBJECTS relocate k k-to)
+  k)
+
 (defn move!
   "put k into k-to, taking it out of wherever it was (ZIL's MOVE). one swap!,
   so the one-parent invariant is never observably broken.
 
-  also marks k ::f-touched, which is what retires its `fdesc`. the author never
-  sets that by hand -- an object's first description should stop being used once
-  the object has been disturbed, and that is not a thing worth remembering."
+  `place!` plus bookkeeping: also marks k ::f-touched, which is what retires its
+  `fdesc`. the author never sets that by hand -- an object's first description
+  should stop being used once the object has been disturbed, and that is not a
+  thing worth remembering."
   [k k-to]
   (swap! OBJECTS
          (fn [objects]
-           (let [from (location-of k objects)]
-             (cond-> objects
-               from (disj-child from k)
-               true (conj-child k-to k)
-               (contains? objects k) (update-in [k kw-features]
-                                                (fnil conj #{}) ::f-touched)))))
+           (cond-> (relocate objects k k-to)
+             (contains? objects k) (update-in [k kw-features]
+                                              (fnil conj #{}) ::f-touched))))
   k)
 
 (defn remove!
@@ -400,7 +442,7 @@
 
 (defn die!
   "end the game, printing `msg` (already-rendered text -- use `say` if the line
-  belongs in petra.text). aborts the turn; `turn!` catches it."
+  belongs in petra.engine.text). aborts the turn; `turn!` catches it."
   [& msg]
   (throw (ex-info "the game is over"
                   {::game-over true
@@ -467,7 +509,7 @@
 ;; text frames
 ;; ---------------------------------------------------------------------------
 ;; the engine contains no player-facing prose. every line it can print lives in
-;; petra.text keyed by id, and gets filled in here. see that namespace for the
+;; petra.engine.text keyed by id, and gets filled in here. see that namespace for the
 ;; slot syntax.
 
 (def FRAMES (atom text/FRAMES))
@@ -541,7 +583,7 @@
 
 (defn- oxford-join
   "punctuate a list of already-rendered phrases. the punctuation itself is
-  authorable -- see the ::list-* frames in petra.text."
+  authorable -- see the ::list-* frames in petra.engine.text."
   [items]
   (case (count items)
     0 nil
@@ -1001,3 +1043,107 @@
 (def-object SHARED)
 (def-object GLOBALS)
 (def-object INTANGIBLES)
+
+;; ---------------------------------------------------------------------------
+;; the game
+;; ---------------------------------------------------------------------------
+;; A game declares what it IS and says nothing about being run. `def-game`
+;; compiles to a plain map under a var called CONFIG, which is all a runner needs
+;; to find; the game folder therefore holds no entry point, no boot call, and no
+;; reference to a runner. Dependencies point one way only: game -> engine.
+;;
+;; The keys here are universal behaviours the engine interprets, so they are
+;; engine keywords -- but authored as bare symbols, like every other property in
+;; this DSL. Add to `config-symbols` as more of them turn out to be universal.
+
+(def config-symbols
+  {'title  ::title                                          ; what the game is called
+   'author ::author                                          ; who to credit
+   'actor  ::actor                                           ; the object the player IS
+   'start  ::start})                                         ; the room they begin in
+
+(defmacro def-game
+  "declare a game. compiles to `(def CONFIG {...})` in the current namespace --
+  pure data, which is what a runner reads.
+
+    (def-game
+      title  \"The Gatehouse\"
+      author \"you\"
+      actor  ::you
+      start  ::gatehouse)"
+  [& properties]
+  (when-not (even? (count properties))
+    (throw (ex-info "def-game needs property/value pairs" {:properties properties})))
+  (let [m (into {}
+                (for [[k v] (partition 2 properties)]
+                  (if-let [config-key (get config-symbols k)]
+                    [config-key v]
+                    (throw (ex-info "Unknown game property"
+                                    {:property k
+                                     :known (vec (sort (keys config-symbols)))})))))]
+    `(def ~'CONFIG ~m)))
+
+(defn boot!
+  "start a game from its CONFIG: announce it, become the actor, arrive in the
+  starting room. This is ZIL's GO routine, which likewise printed the opening
+  text and then did a LOOK before handing off to the main loop.
+
+  `actor` and `start` are structurally required -- without them there is nobody to
+  be and nowhere to be it -- so their absence throws. A missing `title` or
+  `author` merely renders as [?title] via the banner frame, loud but survivable.
+
+  The actor's starting position is stated in ONE place, `start`, and the author
+  never puts the actor into the world by hand. Placing it is the engine's job, and
+  deliberately so: whether the actor ends up held by the room, or by a vehicle in
+  it, or by local-globals, is an implementation matter the author shouldn't have to
+  have an opinion about -- and would have to revise if the engine changed its mind.
+  So `boot!` requires the actor to be held by nothing at all, and puts it where the
+  config says.
+
+  Note there is no goto! here, and so no ev-leave/ev-enter: beginning somewhere is
+  not the same as arriving there, and firing either on a room you never left or
+  entered would be a lie. ZIL's GO likewise did a LOOK rather than a GOTO. Placing
+  the actor is a plain write to the world; only look! runs.
+
+  Boots once, on a world nobody has placed the actor in. Calling it twice throws,
+  which is the right answer -- restarting means rebuilding the world, not booting
+  a used one again.
+
+  Returns the config, so a runner can keep reading it."
+  [config]
+  (let [k-actor (::actor config)
+        k-start (::start config)]
+    (when-not k-actor
+      (throw (ex-info "game config has no `actor`"
+                      {:config config :hint "(def-game actor ::you ...)"})))
+    (when-not k-start
+      (throw (ex-info "game config has no `start`"
+                      {:config config :hint "(def-game start ::some-room ...)"})))
+    ;; goto! used to catch this on our behalf; without it the check has to be here,
+    ;; or a `start` naming an object surfaces as a vaguer complaint about the actor
+    (when-not (in? k-start ROOMS)
+      (throw (ex-info "game `start` is not a room"
+                      {:start k-start
+                       :hint "rooms are made with def-room, which is what puts them in ROOMS"
+                       :known-rooms (vec (sort (contents ROOMS)))})))
+    ;; one pass over the whole containment tree, answering two questions at once
+    (let [index (parent-index)]
+      ;; nothing anywhere may sit in two places
+      (when-let [bad (seq (containment-problems index))]
+        (throw (ex-info "objects held by more than one parent"
+                        {:problems (into {} (map (fn [[k ps]] [k (vec (sort ps))]) bad))
+                         :hint "each object belongs in exactly one `contains`"})))
+      ;; and the actor may not be placed in the world at all -- that's boot!'s job
+      (when-let [holders (get index k-actor)]
+        (throw (ex-info "the actor is already placed in the world"
+                        {:actor k-actor
+                         :held-by (vec (sort holders))
+                         :declared-start k-start
+                         :hint (str "remove the actor from `contains`; its starting "
+                                    "position is the config's `start`")}))))
+    (tell! (say ::text/banner {:title (::title config) :author (::author config)}) :>>)
+    (set-actor! k-actor)
+    (place! k-actor k-start)                                ; a plain write: not a goto!,
+                                                            ; and nothing was disturbed
+    (look!)
+    config))

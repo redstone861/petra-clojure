@@ -1,6 +1,6 @@
-(ns petra.handlers
-  (:require [petra.engine :as engine]
-            [petra.macros :refer [handler]]))
+(ns petra.test-game.handlers
+  (:require [petra.engine.core :as engine]
+            [petra.engine.macros :refer [handler]]))
 
 ;; test fixtures for the engine's three call-out contracts. none of these
 ;; reference world keys -- they work off `self` and `objects`, which is what

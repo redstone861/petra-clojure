@@ -1,4 +1,4 @@
-(ns petra.syntactic
+(ns petra.engine.syntactic
   (:gen-class))
 
 (def V :V)
