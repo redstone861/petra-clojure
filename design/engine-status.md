@@ -74,7 +74,7 @@ underscores in paths, so the two must differ.
 | Verbs | keyword → behaviour in `VERBS`; `def-verb` with `handle`/`pre`/`turn?`; `verb-def` `verb-handler` `pre-action` `consumes-turn?` |
 | Dispatch | `perform!` runs actor → room → pre-action → indirect → direct → verb default, and returns whether anything consumed the input |
 | Turn | `turn!` runs one turn and returns its state; `*turn*`/`record-turn!`/`no-time-passes!` for turn-scoped facts; `die!`/`game-over?` |
-| Exits | `to [[north ::room via ::door]]`, five flavours (plain / `if` atom / `with` fn / `via` door / `never`), all compiling to thunks |
+| Exits | `to [[north ::room via ::door]]` compiles to DATA. `resolve-exit` is a pure query; `exit-to` `exit-message` `exit-exists?` `exit-door` `exit-permanent?` `exit-destination` `exit-has-destination?` `exit-handler` `exit-notes` `exit-directions` `direction-to` |
 | Definition | `def-object`/`def-room`, aliased `object`/`room`; property table in `prop-symbols-pre` |
 
 Everything the engine calls out to takes **one** argument: the turn context
@@ -158,6 +158,33 @@ Everything the engine calls out to takes **one** argument: the turn context
   runs. (Consequence: the "is `start` a room?" check `goto!` used to provide for
   free had to be written out explicitly, or a `start` naming an object surfaced as
   a vaguer complaint about the actor's position.)
+
+- **Exits are data, and resolving them is a query.** The DSL compiles to a spec
+  map per direction rather than a closure, so a room's exits are inspectable —
+  `exit-directions` and `direction-to` exist because of it. `resolve-exit` returns
+  a result and does nothing: exactly one of `::to` (may go), `::say` (may not, and
+  these are the words), or `::run` (undecided — a `with` exit).
+
+  That purity is structural, not a promise about author discipline: a `with` fn is
+  never run during resolution, only handed over. Which is what makes the
+  pre-action pattern safe — resolve, intervene (open a door you have the key to),
+  decline, and let the verb default resolve *again*. Under the old
+  thunk-that-prints design, resolving twice printed the refusal twice.
+
+  **A `with` fn is a responder**, with the same contract as an object's `handle`
+  and a verb's: truthy means it dealt with the attempt. It may `goto!`, print,
+  mutate, `no-time-passes!`, or `die!` — so "effects but no movement" is a property
+  of the exit itself and needn't be split into a room handler. `wrap-exit-fn` wraps
+  it at definition time so a decline still says something, which keeps the
+  `::cant-go` frame inside the engine.
+
+  **Keys are implementation; functions are the interface** — the same rule that
+  makes `kw-contains-local` public but never typed. Game code asks named questions.
+  A game's own annotations come back under its own keywords via `exit-notes`, so
+  there is no table of `::e/` keys to memorise. Note `exit-to` (resolved) and
+  `exit-destination` (declared) are different facts: a shut `if` exit declares a
+  destination it will not take you to, and a `with` exit's declared destination is
+  a hint for cataloguing that nothing reads at resolution.
 
 - **A verb is a keyword; the registry maps it to behaviour.** That indirection is
   the point: `(= verb ::take)` becomes possible, and many input words can name one
@@ -304,21 +331,13 @@ not `k-dir`. `k-dir` means direct object, a direction isn't an object, and
 handlers now rely on `(= self k-dir)` to tell PRSO from PRSI. `design/lexer-parser.txt`
 already leans this way with `CAT :DIR`.
 
-**3. Exits overhaul — under consideration (2026-08-19).** Exits are the last place
-the engine prints from inside a decision: a thunk both decides and `tell!`s its
-refusal, which is the print-as-you-go pattern the describers were cured of. Making
-them return data instead (`{:to k}` / `{:refused …}`) would finish that job and
-make them testable without capturing stdout. Two things to fold in:
-
-- the `with` (FEXIT) fn currently receives only the declared room key, so it can't
-  see the actor or check inventory. Parked from the `goto!` discussion — extend it
-  to take the context.
-- exit *resolution* belongs in the engine (it's the reader for `::exits`, the
-  counterpart to `with-to`'s writer). Only the *binding* is open, which is why
-  `walking` lives in `dev/demo.clj` today.
-
-Per-direction *declarative* vetoes should get their ergonomics here rather than by
-growing a new contract — the room's responder already handles the room-wide case.
+**3. ~~Exits overhaul~~ — done (2026-08-19).** Exits compile to data, one spec map
+per direction. `resolve-exit` is the single interpreter and a *pure query* — it
+computes, prints nothing, and never runs a `with` fn. The `exit-*` accessors are
+the whole interface, so game code contains no engine keywords. Compile-time
+validation on all seven malformed shapes; `never` takes no destination; `with` may
+omit one. Removed: `exit-in-direction`, `with-to`, `no-exit`, `tell-door-cant-go`,
+and `postprocess-props`/`prop-keys-post` (exits were that hook's only user).
 
 **4. `in-scope`** — *the parser contract.* "Which objects can the player refer to
 this turn?" = the room, what's visibly in it, the actor's inventory, the room's

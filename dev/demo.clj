@@ -48,13 +48,16 @@
            (e/set-verbosity! e/v-verbose)
            (e/tell! "Maximum verbosity." :>>)))
 
-;; The bit we deliberately kept OUT of the engine: resolving a direction against
-;; the room's exits is the verb layer's job. goto! does the moving.
+;; Resolving is the engine's job and returns data; deciding what to DO about it is
+;; the verb layer's. Not one engine keyword in here -- the exit-* accessors are the
+;; whole interface, and a `with` exit hands back a fn for us to run.
 (def-verb ::walk
-  handle (fn [{:keys [k-here direction]}]
-           (if-let [thunk (get (e/prop k-here e/kw-room-exits) direction)]
-             (when-let [dest (thunk)] (e/goto! dest))
-             (e/tell! (e/say ::t/cant-go) :>>))
+  handle (fn [{:keys [k-here direction objects] :as ctx}]
+           (let [r (e/resolve-exit k-here direction objects)]
+             (cond
+               (e/exit-to r)      (e/goto! (e/exit-to r))
+               (e/exit-handler r) ((e/exit-handler r) ctx)
+               :else              (e/tell! (e/exit-message r) :>>)))
            ::e/handled))
 
 ;; ---------------------------------------------------------------------------
@@ -66,6 +69,20 @@
 (defn crypt-h [{:keys [verb k-actor]}]
   (when (and (= verb ::walk) (e/ultimately-in? ::deed k-actor))
     (e/tell! "You have the deed in your hands, and the shelves do not like it." :>>)))
+
+;; A `with` exit is a responder bound to a direction, so it has every freedom a
+;; handler has: it prints what it likes, changes the world, and decides whether the
+;; actor moves at all. This is the "effects but no movement" case.
+(def ASKED (atom false))
+
+(defn tower-stair [ctx]
+  (if @ASKED
+    (do (e/tell! "The verger stands aside." :>>)
+        (e/goto! ::belfry))
+    (do (reset! ASKED true)
+        (e/tell! "The verger steps in front of the stair." :>>
+                 "\"Not without asking,\" he says, so you ask." :>>)
+        ::e/handled)))                                   ; consumed; no movement
 
 ;; An each-turn listener with a counter, which is how ZIL's I-TRUCK worked.
 (def DRIPS (atom 0))
@@ -124,7 +141,7 @@
       to [[south ::gatehouse]
           [down ::crypt via ::trapdoor]
           [east ::chapel if BELL-RUNG]
-          [west ::gallery never "The gallery floor is long gone. There is nothing to walk on."]])
+          [west never "The gallery floor is long gone. There is nothing to walk on."]])
 
 (object ::urn label "alabaster urn" features [container] contains [::deed])
 (object ::deed label "deed of tenure")
@@ -147,9 +164,16 @@
       ;; that follows has to notice
       on {enter (fn [_] (e/move! ::verger ::chapel)
                   (e/tell! "Someone straightens up from the far pew." :>>))}
-      to [[west ::hall]])
+      to [[west ::hall]
+          [up with tower-stair]])                        ; no destination: the fn decides
 
 (object ::verger label "verger" desc "The verger is watching you and saying nothing.")
+
+(room ::belfry
+      label "Belfry"
+      features [lit]
+      desc "A single bell, and a long way down through the boards."
+      to [[down ::chapel]])
 
 ;; ---------------------------------------------------------------------------
 ;; the playthrough
@@ -196,6 +220,9 @@
 (cmd "take bell"      ::take :dobj ::bell)
 (cmd "ring bell"      ::ring :dobj ::bell)
 (cmd "east"          ::walk :direction e/kw-east)
+(cmd "up"            ::walk :direction e/kw-up)         ; the verger objects
+(cmd "up"            ::walk :direction e/kw-up)         ; ...and then does not
+(cmd "down"          ::walk :direction e/kw-down)
 (cmd "west"          ::walk :direction e/kw-west)
 (cmd "down"          ::walk :direction e/kw-down)
 (cmd "open urn"       ::open :dobj ::urn)

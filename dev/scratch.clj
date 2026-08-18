@@ -118,6 +118,65 @@
 (set-frames! petra.engine.text/FRAMES)
 (swap! OBJECTS update ::d/you dissoc kw-handler)
 
+(println "\n=== `with` exits are handed over, not run ===")
+(def ran (atom 0))
+(def-verb ::v-w
+  handle (fn [{:keys [k-here direction objects] :as ctx}]
+           (let [r (resolve-exit k-here direction objects)]
+             (cond
+               (exit-to r)      (goto! (exit-to r))
+               (exit-handler r) ((exit-handler r) ctx)
+               :else            (tell! (exit-message r) :>>)))
+           ::handled))
+
+(make-object ::wroom
+             {kw-label "W Room"
+              kw-features #{::f-lit}
+              kw-room-exits {::north {::to ::d/aqua-room
+                                      ::with (wrap-exit-fn
+                                              (fn [_] (swap! ran inc) ::handled))}
+                             ::south {::with (wrap-exit-fn (fn [_] (swap! ran inc) nil))}}})
+(swap! OBJECTS update-in [ROOMS kw-contains-local] (fnil conj #{}) ::wroom)
+(remove! ::d/you) (place! ::d/you ::wroom) (set-actor! ::d/you)
+
+(reset! ran 0)
+(let [r (resolve-exit ::wroom ::north)]
+  (chk "resolving does NOT run the fn" 0 @ran)
+  (chk "no resolved destination -- it is undecided" nil (exit-to r))
+  (chk "nothing to say either" nil (exit-message r))
+  (chk "it hands over a fn" true (fn? (exit-handler r)))
+  (chk "the declared destination is still catalogued" ::d/aqua-room (exit-destination r))
+  (chk "and reports that it has one" true (exit-has-destination? r)))
+(let [r (resolve-exit ::wroom ::south)]
+  (chk "a with exit may declare no destination" false (exit-has-destination? r))
+  (chk "so exit-destination is nil" nil (exit-destination r)))
+(chk "resolving repeatedly still runs nothing" 0
+     (do (dotimes [_ 5] (resolve-exit ::wroom ::north)) @ran))
+
+(println "\n=== ...and run once, by the verb ===")
+(with-out-str (turn! ::v-w :direction ::north))
+(chk "the verb ran it exactly once" 1 @ran)
+
+(println "\n=== a declining fn still gets an answer, from the engine ===")
+(reset! ran 0)
+(chk "wrap-exit-fn supplies the fallback" "You can't go that way.\n"
+     (with-out-str (turn! ::v-w :direction ::south)))
+(chk "and the author's fn did run" 1 @ran)
+
+(println "\n=== the freedoms a with fn now has ===")
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::east]
+       {::with (wrap-exit-fn (fn [_] (no-time-passes!) ::handled))})
+(chk "it can stop the clock" false (:time-passed? (turn! ::v-w :direction ::east)))
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::west]
+       {::with (wrap-exit-fn (fn [_] (die! "The floor was never there.")))})
+(chk "it can end the game" true
+     (let [st (atom nil)] (with-out-str (reset! st (turn! ::v-w :direction ::west))) (:over? @st)))
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::in]
+       {::with (wrap-exit-fn (fn [_] (tell! "One." :>> "Two." :>>) ::handled))})
+(chk "it can print several lines and not move you" "One.\nTwo.\n"
+     (with-out-str (turn! ::v-w :direction ::in)))
+(chk "...and the actor really did not move" ::wroom (room-of ::d/you))
+
 (println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
 
 ;; ---------------------------------------------------------------------------
@@ -187,18 +246,72 @@
             (finally (set-actor! saved)))))
 (chk "the actor never moved during any of that" ::d/god-kingdom (room-of ::d/you))
 
-(println "=== goto! composes with the exit thunks it doesn't know about ===")
+(println "=== goto! composes with resolved exits ===")
 (with-out-str (goto! ::d/aqua-room))
-(let [exits (prop ::d/aqua-room kw-room-exits)]
-  (clear-feature ::d/green-door ::f-open)
-  (let [r (atom nil) out (with-out-str (reset! r ((get exits ::down))))]
-    (chk "shut door refuses, so nothing to goto!" false @r)
-    (chk "...having said why itself" true (boolean (re-find #"is closed" out))))
-  (set-feature ::d/green-door ::f-open)
-  (let [dest ((get exits ::down))]
-    (chk "open door yields a room" ::d/cellar dest)
-    (with-out-str (goto! dest))
-    (chk "and goto! took us there" ::d/cellar (room-of ::d/you))))
+(open! ::d/green-door)
+(let [r (resolve-exit ::d/aqua-room ::down)]
+  (chk "resolution yields a room" ::d/cellar (exit-to r))
+  (with-out-str (goto! (exit-to r)))
+  (chk "and goto! took us there" ::d/cellar (room-of ::d/you)))
+
+(println "\n=== `with` exits are handed over, not run ===")
+(def ran (atom 0))
+(def-verb ::v-w
+  handle (fn [{:keys [k-here direction objects] :as ctx}]
+           (let [r (resolve-exit k-here direction objects)]
+             (cond
+               (exit-to r)      (goto! (exit-to r))
+               (exit-handler r) ((exit-handler r) ctx)
+               :else            (tell! (exit-message r) :>>)))
+           ::handled))
+
+(make-object ::wroom
+             {kw-label "W Room"
+              kw-features #{::f-lit}
+              kw-room-exits {::north {::to ::d/aqua-room
+                                      ::with (wrap-exit-fn
+                                              (fn [_] (swap! ran inc) ::handled))}
+                             ::south {::with (wrap-exit-fn (fn [_] (swap! ran inc) nil))}}})
+(swap! OBJECTS update-in [ROOMS kw-contains-local] (fnil conj #{}) ::wroom)
+(remove! ::d/you) (place! ::d/you ::wroom) (set-actor! ::d/you)
+
+(reset! ran 0)
+(let [r (resolve-exit ::wroom ::north)]
+  (chk "resolving does NOT run the fn" 0 @ran)
+  (chk "no resolved destination -- it is undecided" nil (exit-to r))
+  (chk "nothing to say either" nil (exit-message r))
+  (chk "it hands over a fn" true (fn? (exit-handler r)))
+  (chk "the declared destination is still catalogued" ::d/aqua-room (exit-destination r))
+  (chk "and reports that it has one" true (exit-has-destination? r)))
+(let [r (resolve-exit ::wroom ::south)]
+  (chk "a with exit may declare no destination" false (exit-has-destination? r))
+  (chk "so exit-destination is nil" nil (exit-destination r)))
+(chk "resolving repeatedly still runs nothing" 0
+     (do (dotimes [_ 5] (resolve-exit ::wroom ::north)) @ran))
+
+(println "\n=== ...and run once, by the verb ===")
+(with-out-str (turn! ::v-w :direction ::north))
+(chk "the verb ran it exactly once" 1 @ran)
+
+(println "\n=== a declining fn still gets an answer, from the engine ===")
+(reset! ran 0)
+(chk "wrap-exit-fn supplies the fallback" "You can't go that way.\n"
+     (with-out-str (turn! ::v-w :direction ::south)))
+(chk "and the author's fn did run" 1 @ran)
+
+(println "\n=== the freedoms a with fn now has ===")
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::east]
+       {::with (wrap-exit-fn (fn [_] (no-time-passes!) ::handled))})
+(chk "it can stop the clock" false (:time-passed? (turn! ::v-w :direction ::east)))
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::west]
+       {::with (wrap-exit-fn (fn [_] (die! "The floor was never there.")))})
+(chk "it can end the game" true
+     (let [st (atom nil)] (with-out-str (reset! st (turn! ::v-w :direction ::west))) (:over? @st)))
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::in]
+       {::with (wrap-exit-fn (fn [_] (tell! "One." :>> "Two." :>>) ::handled))})
+(chk "it can print several lines and not move you" "One.\nTwo.\n"
+     (with-out-str (turn! ::v-w :direction ::in)))
+(chk "...and the actor really did not move" ::wroom (room-of ::d/you))
 
 (println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
 
@@ -269,6 +382,65 @@
 (chk "no ev-enter, no ev-leave" [] @boot-seen)
 (swap! OBJECTS update ::d/god-kingdom update kw-on dissoc ev-enter)
 (swap! OBJECTS update ::d/god-kingdom update kw-on dissoc ev-leave)
+
+(println "\n=== `with` exits are handed over, not run ===")
+(def ran (atom 0))
+(def-verb ::v-w
+  handle (fn [{:keys [k-here direction objects] :as ctx}]
+           (let [r (resolve-exit k-here direction objects)]
+             (cond
+               (exit-to r)      (goto! (exit-to r))
+               (exit-handler r) ((exit-handler r) ctx)
+               :else            (tell! (exit-message r) :>>)))
+           ::handled))
+
+(make-object ::wroom
+             {kw-label "W Room"
+              kw-features #{::f-lit}
+              kw-room-exits {::north {::to ::d/aqua-room
+                                      ::with (wrap-exit-fn
+                                              (fn [_] (swap! ran inc) ::handled))}
+                             ::south {::with (wrap-exit-fn (fn [_] (swap! ran inc) nil))}}})
+(swap! OBJECTS update-in [ROOMS kw-contains-local] (fnil conj #{}) ::wroom)
+(remove! ::d/you) (place! ::d/you ::wroom) (set-actor! ::d/you)
+
+(reset! ran 0)
+(let [r (resolve-exit ::wroom ::north)]
+  (chk "resolving does NOT run the fn" 0 @ran)
+  (chk "no resolved destination -- it is undecided" nil (exit-to r))
+  (chk "nothing to say either" nil (exit-message r))
+  (chk "it hands over a fn" true (fn? (exit-handler r)))
+  (chk "the declared destination is still catalogued" ::d/aqua-room (exit-destination r))
+  (chk "and reports that it has one" true (exit-has-destination? r)))
+(let [r (resolve-exit ::wroom ::south)]
+  (chk "a with exit may declare no destination" false (exit-has-destination? r))
+  (chk "so exit-destination is nil" nil (exit-destination r)))
+(chk "resolving repeatedly still runs nothing" 0
+     (do (dotimes [_ 5] (resolve-exit ::wroom ::north)) @ran))
+
+(println "\n=== ...and run once, by the verb ===")
+(with-out-str (turn! ::v-w :direction ::north))
+(chk "the verb ran it exactly once" 1 @ran)
+
+(println "\n=== a declining fn still gets an answer, from the engine ===")
+(reset! ran 0)
+(chk "wrap-exit-fn supplies the fallback" "You can't go that way.\n"
+     (with-out-str (turn! ::v-w :direction ::south)))
+(chk "and the author's fn did run" 1 @ran)
+
+(println "\n=== the freedoms a with fn now has ===")
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::east]
+       {::with (wrap-exit-fn (fn [_] (no-time-passes!) ::handled))})
+(chk "it can stop the clock" false (:time-passed? (turn! ::v-w :direction ::east)))
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::west]
+       {::with (wrap-exit-fn (fn [_] (die! "The floor was never there.")))})
+(chk "it can end the game" true
+     (let [st (atom nil)] (with-out-str (reset! st (turn! ::v-w :direction ::west))) (:over? @st)))
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::in]
+       {::with (wrap-exit-fn (fn [_] (tell! "One." :>> "Two." :>>) ::handled))})
+(chk "it can print several lines and not move you" "One.\nTwo.\n"
+     (with-out-str (turn! ::v-w :direction ::in)))
+(chk "...and the actor really did not move" ::wroom (room-of ::d/you))
 
 (println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
 
@@ -345,4 +517,216 @@
 (chk "an unknown verb property won't compile" true
      (boolean (re-find #"Unknown verb property"
                        (boom #(eval '(petra.engine.core/def-verb ::nope2 wibble 1 handle (fn [_] nil)))))))
+(println "\n=== `with` exits are handed over, not run ===")
+(def ran (atom 0))
+(def-verb ::v-w
+  handle (fn [{:keys [k-here direction objects] :as ctx}]
+           (let [r (resolve-exit k-here direction objects)]
+             (cond
+               (exit-to r)      (goto! (exit-to r))
+               (exit-handler r) ((exit-handler r) ctx)
+               :else            (tell! (exit-message r) :>>)))
+           ::handled))
+
+(make-object ::wroom
+             {kw-label "W Room"
+              kw-features #{::f-lit}
+              kw-room-exits {::north {::to ::d/aqua-room
+                                      ::with (wrap-exit-fn
+                                              (fn [_] (swap! ran inc) ::handled))}
+                             ::south {::with (wrap-exit-fn (fn [_] (swap! ran inc) nil))}}})
+(swap! OBJECTS update-in [ROOMS kw-contains-local] (fnil conj #{}) ::wroom)
+(remove! ::d/you) (place! ::d/you ::wroom) (set-actor! ::d/you)
+
+(reset! ran 0)
+(let [r (resolve-exit ::wroom ::north)]
+  (chk "resolving does NOT run the fn" 0 @ran)
+  (chk "no resolved destination -- it is undecided" nil (exit-to r))
+  (chk "nothing to say either" nil (exit-message r))
+  (chk "it hands over a fn" true (fn? (exit-handler r)))
+  (chk "the declared destination is still catalogued" ::d/aqua-room (exit-destination r))
+  (chk "and reports that it has one" true (exit-has-destination? r)))
+(let [r (resolve-exit ::wroom ::south)]
+  (chk "a with exit may declare no destination" false (exit-has-destination? r))
+  (chk "so exit-destination is nil" nil (exit-destination r)))
+(chk "resolving repeatedly still runs nothing" 0
+     (do (dotimes [_ 5] (resolve-exit ::wroom ::north)) @ran))
+
+(println "\n=== ...and run once, by the verb ===")
+(with-out-str (turn! ::v-w :direction ::north))
+(chk "the verb ran it exactly once" 1 @ran)
+
+(println "\n=== a declining fn still gets an answer, from the engine ===")
+(reset! ran 0)
+(chk "wrap-exit-fn supplies the fallback" "You can't go that way.\n"
+     (with-out-str (turn! ::v-w :direction ::south)))
+(chk "and the author's fn did run" 1 @ran)
+
+(println "\n=== the freedoms a with fn now has ===")
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::east]
+       {::with (wrap-exit-fn (fn [_] (no-time-passes!) ::handled))})
+(chk "it can stop the clock" false (:time-passed? (turn! ::v-w :direction ::east)))
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::west]
+       {::with (wrap-exit-fn (fn [_] (die! "The floor was never there.")))})
+(chk "it can end the game" true
+     (let [st (atom nil)] (with-out-str (reset! st (turn! ::v-w :direction ::west))) (:over? @st)))
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::in]
+       {::with (wrap-exit-fn (fn [_] (tell! "One." :>> "Two." :>>) ::handled))})
+(chk "it can print several lines and not move you" "One.\nTwo.\n"
+     (with-out-str (turn! ::v-w :direction ::in)))
+(chk "...and the actor really did not move" ::wroom (room-of ::d/you))
+
+(println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
+
+;; ---------------------------------------------------------------------------
+;; exits
+;; ---------------------------------------------------------------------------
+
+(println "\n=== exits compile to data, not closures ===")
+(def AQUA (prop ::d/aqua-room kw-room-exits))
+(chk "a plain exit" {::to ::d/god-kingdom} (::north AQUA))
+(chk "a never exit carries no destination at all" [::never]
+     (vec (keys (::west AQUA))))
+(chk "a door exit names its door" ::d/green-door (::via (::down AQUA)))
+(chk "directions are enumerable now" #{::north ::east ::west ::down}
+     (exit-directions ::d/aqua-room))
+
+(println "\n=== resolve-exit computes and says nothing ===")
+(remove! ::d/you)
+(place! ::d/you ::d/aqua-room)
+(set-actor! ::d/you)
+(defn- res [dir] (resolve-exit ::d/aqua-room dir))
+(chk "resolving prints nothing at all" "" (with-out-str (res ::west)))
+(chk "and is safe to repeat -- the pre-action pattern depends on it"
+     true (= (res ::down) (res ::down) (res ::down)))
+
+(println "\n=== the accessors are the whole interface ===")
+(let [r (res ::north)]
+  (chk "open exit: destination" ::d/god-kingdom (exit-to r))
+  (chk "open exit: nothing to say" nil (exit-message r))
+  (chk "open exit: it exists" true (exit-exists? r))
+  (chk "open exit: no door" nil (exit-door r))
+  (chk "open exit: not permanent" false (exit-permanent? r)))
+(let [r (res ::west)]
+  (chk "never: no destination" nil (exit-to r))
+  (chk "never: the author's words" "The Green Hallway is forbidden." (exit-message r))
+  (chk "never: permanent" true (exit-permanent? r)))
+(let [r (res ::east)]                                    ; if-gated, atom false
+  (chk "failed condition: refused" nil (exit-to r))
+  (chk "failed condition: falls back to the frame" "You can't go that way." (exit-message r))
+  (chk "failed condition: not permanent" false (exit-permanent? r)))
+(let [r (res ::in)]
+  (chk "no such exit: refused" nil (exit-to r))
+  (chk "no such exit: says so" "You can't go that way." (exit-message r))
+  (chk "no such exit: and reports that there is none" false (exit-exists? r)))
+
+(println "\n=== a door exit, and exit-door is about the declaration ===")
+(shut! ::d/green-door)
+(let [r (res ::down)]
+  (chk "shut: refused" nil (exit-to r))
+  (chk "shut: the door-shut frame" "Green Door is closed." (exit-message r))
+  (chk "shut: names the door" ::d/green-door (exit-door r)))
+(open! ::d/green-door)
+(let [r (res ::down)]
+  (chk "open: may go" ::d/cellar (exit-to r))
+  (chk "open: STILL names the door -- it asks about the declaration"
+       ::d/green-door (exit-door r)))
+
+(println "\n=== the pre-action pattern: resolve, intervene, decline, resolve again ===")
+(shut! ::d/green-door)
+(def unlocked (atom []))
+(def-verb ::v-walk
+  pre    (fn [ctx]
+           (let [door (exit-door (resolve-exit (:k-here ctx) (:direction ctx) (:objects ctx)))]
+             (when (and door (not (open? door)))
+               (swap! unlocked conj door)
+               (open! door)
+               nil)))                                    ; decline; the default proceeds
+  handle (fn [{:keys [k-here direction] :as ctx}]
+           (let [r (resolve-exit k-here direction (:objects ctx))]
+             (if-let [to (exit-to r)] (goto! to) (tell! (exit-message r) :>>)))
+           ::handled))
+(with-out-str (turn! ::v-walk :direction ::down))
+(chk "the pre-action opened the door" [::d/green-door] @unlocked)
+(chk "and the default then walked through it" ::d/cellar (room-of ::d/you))
+
+(println "\n=== the game's own annotations ===")
+(make-object ::annotated {kw-room-exits {::north {::to ::d/aqua-room
+                                                  ::notes {:my-game/gate :tidal}}}})
+(swap! OBJECTS update-in [ROOMS kw-contains-local] (fnil conj #{}) ::annotated)
+(let [r (resolve-exit ::annotated ::north)]
+  (chk "notes come back under the game's own key" :tidal (:my-game/gate (exit-notes r)))
+  (chk "and are kept out of the spec" nil (::notes (::spec r)))
+  (chk "empty notes read as {}" {} (exit-notes (res ::north))))
+
+(println "\n=== `with` exits are handed over, not run ===")
+(def ran (atom 0))
+(def-verb ::v-w
+  handle (fn [{:keys [k-here direction objects] :as ctx}]
+           (let [r (resolve-exit k-here direction objects)]
+             (cond
+               (exit-to r)      (goto! (exit-to r))
+               (exit-handler r) ((exit-handler r) ctx)
+               :else            (tell! (exit-message r) :>>)))
+           ::handled))
+
+(make-object ::wroom
+             {kw-label "W Room"
+              kw-features #{::f-lit}
+              kw-room-exits {::north {::to ::d/aqua-room
+                                      ::with (wrap-exit-fn
+                                              (fn [_] (swap! ran inc) ::handled))}
+                             ::south {::with (wrap-exit-fn (fn [_] (swap! ran inc) nil))}}})
+(swap! OBJECTS update-in [ROOMS kw-contains-local] (fnil conj #{}) ::wroom)
+(remove! ::d/you) (place! ::d/you ::wroom) (set-actor! ::d/you)
+
+(reset! ran 0)
+(let [r (resolve-exit ::wroom ::north)]
+  (chk "resolving does NOT run the fn" 0 @ran)
+  (chk "no resolved destination -- it is undecided" nil (exit-to r))
+  (chk "nothing to say either" nil (exit-message r))
+  (chk "it hands over a fn" true (fn? (exit-handler r)))
+  (chk "the declared destination is still catalogued" ::d/aqua-room (exit-destination r))
+  (chk "and reports that it has one" true (exit-has-destination? r)))
+(let [r (resolve-exit ::wroom ::south)]
+  (chk "a with exit may declare no destination" false (exit-has-destination? r))
+  (chk "so exit-destination is nil" nil (exit-destination r)))
+(chk "resolving repeatedly still runs nothing" 0
+     (do (dotimes [_ 5] (resolve-exit ::wroom ::north)) @ran))
+
+(println "\n=== ...and run once, by the verb ===")
+(with-out-str (turn! ::v-w :direction ::north))
+(chk "the verb ran it exactly once" 1 @ran)
+
+(println "\n=== a declining fn still gets an answer, from the engine ===")
+(reset! ran 0)
+(chk "wrap-exit-fn supplies the fallback" "You can't go that way.\n"
+     (with-out-str (turn! ::v-w :direction ::south)))
+(chk "and the author's fn did run" 1 @ran)
+
+(println "\n=== the freedoms a with fn now has ===")
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::east]
+       {::with (wrap-exit-fn (fn [_] (no-time-passes!) ::handled))})
+(chk "it can stop the clock" false (:time-passed? (turn! ::v-w :direction ::east)))
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::west]
+       {::with (wrap-exit-fn (fn [_] (die! "The floor was never there.")))})
+(chk "it can end the game" true
+     (let [st (atom nil)] (with-out-str (reset! st (turn! ::v-w :direction ::west))) (:over? @st)))
+(swap! OBJECTS assoc-in [::wroom kw-room-exits ::in]
+       {::with (wrap-exit-fn (fn [_] (tell! "One." :>> "Two." :>>) ::handled))})
+(chk "it can print several lines and not move you" "One.\nTwo.\n"
+     (with-out-str (turn! ::v-w :direction ::in)))
+(chk "...and the actor really did not move" ::wroom (room-of ::d/you))
+
+(println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
+
+(println "\n=== direction-to, for \"go to the cellar\" ===")
+(open! ::d/green-door)
+(chk "finds a gated exit by its declared destination" ::down
+     (direction-to ::d/aqua-room ::d/cellar))
+(shut! ::d/green-door)
+(chk "still finds it when the gate is shut" ::down
+     (direction-to ::d/aqua-room ::d/cellar))
+(chk "finds a with exit too" ::north (direction-to ::wroom ::d/aqua-room))
+(chk "nil when nothing leads there" nil (direction-to ::d/aqua-room ::d/you))
 (println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))

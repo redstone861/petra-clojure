@@ -61,7 +61,7 @@
           ::bell-rings h/bell-response}                     ; game-defined event
       to [[north ::god-kingdom]
           [east ::green-room if CYCLOPS-DEAD]
-          [west ::green-hallway never "The Green Hallway is forbidden."]
+          [west never "The Green Hallway is forbidden."]
           [down ::cellar via ::green-door]])
 
 ;; the far sides of aqua-room's exits, so every exit flavour has somewhere to go
@@ -76,11 +76,6 @@
       features [lit]
       desc "Stone shelves, every one of them empty."
       to [[up ::aqua-room via ::green-door]])
-
-(room ::green-hallway
-      label "Green Hallway"
-      features [lit]
-      desc "Forbidden, and unremarkable.")
 
 (object ::you
         label "you"

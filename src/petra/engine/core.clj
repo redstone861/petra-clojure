@@ -279,6 +279,9 @@
 (defn clear-feature [object-key feature]
   (swap-object-attr object-key kw-features (fnil disj #{}) feature))
 
+(defn open! "open a door or container." [k] (set-feature k ::f-open) k)
+(defn shut! "shut a door or container." [k] (clear-feature k ::f-open) k)
+
 (defn set-actor! [actor-key]
   (reset! ACTOR actor-key))
 
@@ -927,56 +930,142 @@
 ;; ---------------------------------------------------------------------------
 ;; exits
 ;; ---------------------------------------------------------------------------
+;; An exit compiles to DATA, not a closure: one spec map per direction, holding
+;; what the author declared. `resolve-exit` is the only thing that interprets it,
+;; and it computes rather than acts -- it returns a result and prints nothing.
+;;
+;; That purity is load-bearing. It is what lets a pre-action resolve an exit,
+;; intervene (open a door it has the key to), decline, and let the verb default
+;; resolve again -- ZIL's implicit-take pattern, 9.6. Under the old
+;; thunk-that-prints design, resolving twice printed the refusal twice.
+;;
+;; The result's keys are engine business. Game code asks named questions instead:
+;; exit-to, exit-message, exit-exists?, exit-door, exit-permanent?, exit-notes.
+;;
+;;   {::to    <room-key>   ; RESOLVED destination. the actor may go.
+;;    ::say   <string>     ; refusal text, rendered. the actor may not.
+;;    ::run   <fn>         ; UNDECIDED: a `with` exit. the verb must run it.
+;;    ::spec  <map>        ; the exit AS DECLARED. absent iff no exit that way.
+;;    ::notes <map>}       ; the game's own annotations. omitted when empty.
+;;
+;; Exactly one of ::to / ::say / ::run is present.
+;;
+;; ::run is why this stays a query even though a `with` fn may do anything at all:
+;; resolution never runs it, it only hands it over. So an automap or a curious
+;; handler can resolve every exit in a room for fun, and nothing happens.
+;;
+;; Note ::spec may carry its own ::to -- the destination as *declared* -- which is
+;; a different fact from the resolved one. `[east ::hall if FLAG]` with FLAG false
+;; declares ::hall but resolves to a refusal, so reading the declared destination
+;; as though it were the resolved one would walk the actor through a closed gate.
+;; That is why the spec is nested rather than merged, and why exit-to (resolved)
+;; and exit-destination (declared) are different accessors.
 
-(defn tell-door-cant-go [door-key]
-  (tell! (say ::text/door-shut {:door door-key}) :>>))
+(defn exit-to
+  "the room the actor may go to, or nil if the attempt was refused."
+  [r] (::to r))
 
-(defn- no-exit
-  "an exit that refuses. tell! returns a truthy ::handled, so a rejecting exit
-  has to swallow that and report false, or the caller would read it as a room."
-  [tell-thunk]
-  (tell-thunk)
-  false)
+(defn exit-message
+  "what to say when the actor may not go, or nil when they may."
+  [r] (::say r))
 
-(defn exit-in-direction
-  "Takes a direction keyword and some arguments (see design doc),
-  returning [dir-key exitfn] where (exitfn) returns the new room or false if no movement should occur."
-  ;if [atom]: conditional with global flag atom
-    ;else [msg]: reject with message (otherwise, default) - never use else w/o if or if-open
-  ;with [fun]: function-exit
-  ;if-open [door]: conditional with door
-  ;never [msg]: reject with message
-  [dir-key room-key & {if-atom :if
-                       else-msg :else
-                       with-fun :with
-                       if-open-object-key :if-open
-                       never-msg :never}]
-  (cond
-    if-atom
-    [dir-key #(if @if-atom
-                room-key
-                (no-exit (fn [] (tell! (or else-msg (say ::text/cant-go)) :>>))))]
+(defn exit-exists?
+  "was any exit declared in that direction at all? distinguishes a refusal from
+  walking into a blank wall."
+  [r] (some? (::spec r)))
 
-    with-fun
-    [dir-key #(with-fun room-key)]
+(defn exit-door
+  "the door gating this exit, or nil. about the DECLARATION, not the outcome: it
+  answers \"is a door involved\", so it returns the door whether or not the door
+  is what refused."
+  [r] (::via (::spec r)))
 
-    if-open-object-key
-    [dir-key #(if (open? if-open-object-key)
-                room-key
-                (no-exit (fn [] (if else-msg
-                                  (tell! else-msg :>>)
-                                  (tell-door-cant-go if-open-object-key)))))]
+(defn exit-permanent?
+  "true for a `never` exit -- a refusal no change in the world will ever lift."
+  [r] (contains? (::spec r) ::never))
 
-    never-msg
-    [dir-key #(no-exit (fn [] (tell! never-msg :>>)))]
+(defn exit-handler
+  "for a `with` exit, the fn to run; nil otherwise. Its contract is a responder's,
+  exactly like an object's `handle` or a verb's: truthy means it dealt with the
+  attempt. It may move the actor, print, mutate the world, stop the clock, or kill
+  them -- anything a handler may do.
 
-    ;; unconditional. still a thunk, so that every exit has one shape.
-    :else
-    [dir-key (constantly room-key)]))
+  It is already wrapped so that a decline still says something; see wrap-exit-fn."
+  [r] (::run r))
 
-(defn with-to [exits]
-   (into {} (map #(apply exit-in-direction %) exits))
-  )
+(defn exit-destination
+  "where the exit nominally leads, AS DECLARED -- which is not where the actor may
+  go. Use exit-to for that. This is for cataloguing: it is the only thing a map can
+  say about a `with` exit."
+  [r] (::to (::spec r)))
+
+(defn exit-has-destination?
+  "did the author declare a destination at all? `never` exits never do, and `with`
+  exits need not."
+  [r] (contains? (::spec r) ::to))
+
+(defn exit-notes
+  "the game's own annotations on this exit, keyed by the game's own keywords."
+  [r] (or (::notes r) {}))
+
+(defn exit-directions
+  "every direction declared from k-room. for prose, or for drawing a map."
+  ([k-room] (exit-directions k-room @OBJECTS))
+  ([k-room objects] (set (keys (prop k-room kw-room-exits objects)))))
+
+(defn direction-to
+  "the direction from k-room whose exit is DECLARED to lead to k-dest, or nil.
+  For turning \"go to the chapel\" into a direction.
+
+  Matches on the declared destination, not the resolved one, so it finds an exit
+  whose gate happens to be shut and finds `with` exits too."
+  ([k-room k-dest] (direction-to k-room k-dest @OBJECTS))
+  ([k-room k-dest objects]
+   (some (fn [[dir spec]] (when (= k-dest (::to spec)) dir))
+         (prop k-room kw-room-exits objects))))
+
+(defn- refusal
+  "a refusal may be written as a literal string or as a text-frame id."
+  [x]
+  (when x (if (keyword? x) (say x) x)))
+
+(defn wrap-exit-fn
+  "wrap an author's `with` fn so that declining still says something.
+
+  The fn's contract is a responder's, so nil means \"I did not deal with this\" --
+  and then somebody has to speak or the turn goes silent, which 1.2 forbids. Doing
+  that here rather than in the verb keeps the ::cant-go frame inside the engine,
+  where all engine prose lives. A good exit fn handles its own refusals, so in
+  practice this fallback almost never fires.
+
+  Called from the code def-object emits. Not something a game writes."
+  [f]
+  (fn [ctx] (or (f ctx) (tell! (say ::text/cant-go) :>>))))
+
+(defn resolve-exit
+  "what happens if the actor tries to go `dir` from `k-room`. Computes; does not
+  move anything, does not print, and does not run a `with` fn -- so it is safe to
+  call speculatively, from anywhere, with no turn in flight. See the schema above,
+  and prefer the exit-* accessors to reading the result directly."
+  ([k-room dir] (resolve-exit k-room dir @OBJECTS))
+  ([k-room dir objects]
+   (let [spec (get (prop k-room kw-room-exits objects) dir)
+         notes (::notes spec)
+         out (fn [m] (cond-> (assoc m ::spec (dissoc spec ::notes))
+                       (seq notes) (assoc ::notes notes)))]
+     (cond
+       (nil? spec)               {::say (say ::text/cant-go)}
+       (contains? spec ::never)  (out {::say (refusal (::never spec))})
+       (contains? spec ::with)   (out {::run (::with spec)})
+       (contains? spec ::via)    (if (feature-set? (::via spec) ::f-open objects)
+                                   (out {::to (::to spec)})
+                                   (out {::say (or (refusal (::else spec))
+                                                   (say ::text/door-shut
+                                                        {:door (::via spec) :objects objects}))}))
+       (contains? spec ::if)     (if @(::if spec)
+                                   (out {::to (::to spec)})
+                                   (out {::say (or (refusal (::else spec)) (say ::text/cant-go))}))
+       :else                     (out {::to (::to spec)})))))
 
 ;; ---------------------------------------------------------------------------
 ;; the object-definition DSL
@@ -988,35 +1077,87 @@
     (second x)
     x))
 
-(def to-preproc-map ; dsl keys.
-  {'if    :if
-   'or  :else
-   'with  :with
-   'via   :if-open
-   'never :never
-   'north kw-north
-   'east kw-east
+(def direction-symbols ; dsl names for the directions the engine knows
+  {'north kw-north
+   'east  kw-east
    'south kw-south
-   'west kw-west
-   'up kw-up
-   'down kw-down
-   'in kw-in
-   'out kw-out})
+   'west  kw-west
+   'up    kw-up
+   'down  kw-down
+   'in    kw-in
+   'out   kw-out})
 
-(defn to-preproc-single ; given single to-spec vector, DSL-translate
+(def exit-option-symbols ; dsl names for the gates and their alternatives
+  {'if    ::if                                              ; gate: an atom that must be truthy
+   'via   ::via                                             ; gate: a door that must be open
+   'never ::never                                           ; gate: never, with a reason
+   'with  ::with                                            ; gate: a fn that decides
+   'or    ::else})                                          ; the message when a gate refuses
+
+(def ^:private exit-gates [::if ::via ::never ::with])
+
+(defn- compile-exit
+  "one `[dir dest? & option/note pairs]` form -> [dir-key spec-map].
+
+  Runs at macroexpansion, so every mistake below is a compile error rather than a
+  surprise mid-game. The destination is positional and OPTIONAL: room keys are
+  keywords and option names are bare symbols, so whether one was given is decided
+  by looking at the second element. `never` has no destination -- often there is no
+  room on the other side at all -- and `with` needs none, since the fn decides.
+
+  A destination given alongside `with` is a HINT ONLY. Nothing reads it at
+  resolution; the fn must goto! for itself. It exists so that a `with` exit can
+  still be catalogued -- see exit-destination, which is the only thing a map or a
+  parser can learn about one."
   [exit]
-  (mapv
-    (fn [x]
-      (let [s (unwrap-symbol x)]
-        (get to-preproc-map s x)))
-    exit)
-)
+  (let [[dir & more] exit
+        dir-sym (unwrap-symbol dir)
+        dir-key (or (get direction-symbols dir-sym)
+                    (when (keyword? dir-sym) dir-sym)       ; a game's own direction
+                    (throw (ex-info "unknown direction"
+                                    {:direction dir
+                                     :known (vec (sort (keys direction-symbols)))})))
+        declared? (and (seq more) (not (symbol? (unwrap-symbol (first more)))))
+        dest (when declared? (first more))
+        opts (if declared? (rest more) more)
+        _ (when (odd? (count opts))
+            (throw (ex-info "exit options must be name/value pairs"
+                            {:direction dir :options (vec opts)})))
+        spec (reduce (fn [m [k v]]
+                       (let [sym (unwrap-symbol k)]
+                         (cond
+                           (= sym 'with) (assoc m ::with (list `wrap-exit-fn v))
+                           (get exit-option-symbols sym) (assoc m (get exit-option-symbols sym) v)
+                           (keyword? sym)                (assoc-in m [::notes sym] v)
+                           :else (throw (ex-info "unknown exit option"
+                                                 {:option k :direction dir
+                                                  :known (vec (sort (keys exit-option-symbols)))
+                                                  :hint "a game's own annotations must be keywords"})))))
+                     {}
+                     (partition 2 opts))
+        gates (filterv #(contains? spec %) exit-gates)]
+    (when (> (count gates) 1)
+      (throw (ex-info "an exit may have at most one gate"
+                      {:direction dir :gates gates
+                       :hint "use `with` for a compound condition"})))
+    (when (and (contains? spec ::never) dest)
+      (throw (ex-info "a `never` exit takes no destination"
+                      {:direction dir :destination dest
+                       :hint "there is often no room on the other side to name"})))
+    (when (and (contains? spec ::else) (not (some #{::if ::via} gates)))
+      (throw (ex-info "`or` needs an `if` or a `via` to be the alternative to"
+                      {:direction dir})))
+    (when (and (nil? dest) (not (some #{::never ::with} gates)))
+      (throw (ex-info "this exit needs a destination"
+                      {:direction dir
+                       :hint "only `never` and `with` may omit one"})))
+    [dir-key (cond-> spec dest (assoc ::to dest))]))
 
-(defn to-preproc ; given vec of to-spec vectors, DSL-translate the directions and keywords
+(defn to-preproc
+  "the `to` property: a vector of exit forms -> {direction spec}. Pure data, so a
+  room's exits stay inspectable -- see exit-directions."
   [exits]
-  (let [result (mapv to-preproc-single exits)]
-    result)
-)
+  (into {} (map compile-exit exits)))
 
 (def feature-symbols ; dsl names for the features the engine understands
   {'vowel       ::f-vowel-article
@@ -1072,20 +1213,11 @@
                    ;; `contains` is the authoritative containment relation, so a
                    ;; parent may list children that are not defined yet.
                    'contains (fn [keys] {kw-contains-local (apply hash-set keys)})
-                   'to (fn [exits] {kw-room-exits (to-preproc exits)})}) ; needs postproc
-
-(def prop-keys-post {
-                     kw-room-exits (fn [processed] (with-to processed))
-                     })
-
-(defn postprocess-props [properties]
-  (reduce-kv (fn [new-m k v]
-               (assoc new-m k ((get prop-keys-post k identity) v))) ; postprocess (or, if no key exists, ->)
-             {} ;; Initial empty map
-             properties))
+                   ;; compiles to {direction spec}; see compile-exit
+                   'to (fn [exits] {kw-room-exits (to-preproc exits)})})
 
 (defn make-object [k properties]
-  (swap! OBJECTS assoc k (postprocess-props properties))
+  (swap! OBJECTS assoc k properties)
   k)
 
 (defmacro def-object
