@@ -28,6 +28,10 @@
    ::cant-go   "You can't go that way."
    ::door-shut "{{The door}} is closed."
 
+   ;; --- the end ---------------------------------------------------------------
+   ;; printed after whatever message was passed to `die!`
+   ::died "*** You have died. ***"
+
    ;; --- looking around -------------------------------------------------------
    ::too-dark "It's too dark to see."
 

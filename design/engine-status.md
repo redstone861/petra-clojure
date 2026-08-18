@@ -1,6 +1,6 @@
 # Petra — engine status and next steps
 
-*Last updated 2026-08-17.*
+*Last updated 2026-08-18.*
 
 ## What this project is
 
@@ -52,12 +52,13 @@ to exercise new engine surface.
 | Text | all engine prose lives in `src/petra/text.clj` as frames with `{{named slots}}`; `say`/`fill`/`merge-frames!` |
 | Describers | `describe-object` `describe-contents` `describe-room` `look!`; brief/verbose/superbrief |
 | Events | `::on {event fn}` map, open to game-defined namespaced events; `notify!` `listener` |
-| Dispatch | `perform!` runs actor → room → pre-action → indirect → direct → verb default |
+| Dispatch | `perform!` runs actor → room → pre-action → indirect → direct → verb default, and returns whether anything consumed the input |
+| Turn | `turn!` runs one turn and returns its state; `*turn*`/`record-turn!`/`no-time-passes!` for turn-scoped facts; `die!`/`game-over?` |
 | Exits | `to [[north ::room via ::door]]`, five flavours (plain / `if` atom / `with` fn / `via` door / `never`), all compiling to thunks |
 | Definition | `def-object`/`def-room`, aliased `object`/`room`; property table in `prop-symbols-pre` |
 
 Everything the engine calls out to takes **one** argument: the turn context
-(`verb pre-verb k-dir k-ind k-actor k-here self objects`).
+(`verb pre-verb k-dir k-ind k-actor k-here self objects turn`).
 
 ## Decisions already made — don't relitigate these
 
@@ -91,14 +92,50 @@ Everything the engine calls out to takes **one** argument: the turn context
 - **The actor is not scenery in its own room** — `describe-contents` skips it, so
   no game has to remember to flag its own player object.
 
+- **A responder's return value means exactly one thing: did you consume the
+  input.** Anything else a handler learns about the *turn* goes to `*turn*`. ZIL
+  tried the other way first and retracted it (§8.4): passing `M-FATAL` up through
+  returns meant every intermediate frame had to forward it, "lots of extra code
+  and lots of chances to screw up."
+
+- **`*turn*` has exactly ONE door and a CLOSED list of contents.** The list today
+  is `:time-passed?`, and that is all. To qualify, a fact must be *meaningless
+  outside one turn* — which rules out score, move count, what "it" refers to (it
+  persists into the next turn), and the daemon queue: all of those are
+  game-scoped and belong in their own atoms. `:handled?`/`:over?` are outcomes
+  `turn!` computes, so they live in its return value, keeping the invariant that
+  everything *in* the atom was recorded there deliberately during the turn. The
+  only plausible future addition is `:output?` for a `WAIT` verb, and it isn't
+  added because nothing consumes it. `record-turn!` is private, so the list can't
+  grow without also adding a named fn and editing the documented list. Expanding
+  it needs an argument first.
+
+  The turn is deliberately *not* in the context. Two paths to one atom invited raw
+  `swap!`s that bypassed the closed list, and bought visibility only for handlers
+  that skip the `handler` macro — which doesn't destructure it anyway.
+
+- **Death is an abort, not a flag.** ZIL's "fatal" lumped together three
+  unrelated things. Discarding queued input and "the clock didn't advance" are
+  *notes the turn carries to its end*; death must stop the rest of the handler and
+  the rest of the chain, or you get "You are crushed by the boulder. Taken." So
+  flags go to `*turn*` and `die!` throws. ZIL's `JIGS-UP` didn't return either.
+
 ## Next steps, in order
 
-**0. Real tests.** All verification so far has been throwaway scripts in a
-session-scoped tmp dir; they're gone. `test/petra/core_test.clj` still contains
-the generated failing `(is (= 0 1))`. Port the coverage into `test/petra/` as
-`clojure.test`: containment invariants, the PERFORM chain order, the describers,
-and frame rendering. Cheap, and it stops the next refactor from being a
-leap of faith.
+**0. ~~Real tests~~ — deliberately deferred (2026-08-18).** Sam's call, and a
+reasonable one: the engine's shape is still moving, so tests pinning today's API
+would be rewritten before catching anything. What *did* earn its keep is running
+code — every real bug found so far (`:A` recursion, exits returning `tell!`'s
+truthy value, the actor listed as scenery, `feature-set?` handed a map) came from
+executing, not reading. So `dev/scratch.clj` is the compromise: a throwaway
+harness that survives the session, with no `lein test` hookup and no maintenance
+obligation. Rewrite it freely.
+
+Still outstanding: `test/petra/core_test.clj` holds the generated failing
+`(is (= 0 1))`. Eventually worth pinning a handful of *invariants* that are design
+decisions rather than implementation ("a key appears in at most one parent's
+contains-set" survives every API change contemplated) — about five assertions,
+not a suite.
 
 **1. `goto!` / `walk!`** — ~25 lines, and the fastest route to something playable.
 Nothing in the engine currently *runs* an exit thunk, so the whole exit DSL is
@@ -136,10 +173,22 @@ be able to refer to the door in order to open it. Doors are the canonical
 local-global (§7.4). Use that as the test case. (ZIL also split `VISIBLE?` from
 `ACCESSIBLE?` — build one `in-scope` now, split it when a verb needs it.)
 
-**4. Main loop, turn counter, `ev-each-turn`.** There's no notion of a turn at all
-yet. Two things to settle here: which verbs consume time (ZIL's `GAME-VERB?` —
-that's the `turn?` field above, much cheaper to design in now than to retrofit),
-and how `pf-fatal` travels. See open questions.
+**4. ~~The turn~~ — done (2026-08-18).** `turn!` runs one whole turn: the
+responder chain, then `ev-each-turn` on the room if the clock advanced. Returns
+`{:time-passed? :handled? :over?}` plus anything else a handler recorded, so new
+turn-scoped facts never change its signature. `perform!` is now just the chain,
+and stays separately callable — ZIL's habit of re-dispatching an input as another
+verb from inside a handler.
+
+`no-time-passes!` is ZIL's `GAME-VERB?` and works from arbitrary depth with no
+ctx threaded, which is the property the whole design was chosen for. `die!`
+aborts. `pf-fatal`/`pf-dead`/`perform-pass-up?` are deleted.
+
+What remains is the *loop*, which needs the parser for input: read, parse, `turn!`,
+stop if `:over?`. Multi-command input lines are deliberately out of scope — with
+one input per turn there are no queued commands to discard, so ZIL's `M-FATAL`
+has no reason to exist here. If chaining ever arrives, it's `record-turn!` with
+one more key and a caller that stops early.
 
 **5. `take`/`drop`, a `PLAYER` object, `f-takeable`.** The first two real verbs,
 which prove steps 2 and 3 together.
@@ -155,17 +204,17 @@ the world definitions on load.
 
 ## Open questions and known weak spots
 
-- **`pf-fatal` is a bucket brigade, and ZIL abandoned that exact design.** §8.4:
-  passing `M-FATAL` up through nested routine calls meant "lots of extra code and
-  lots of chances to screw up," so they replaced it with settable-from-any-depth
-  state. `perform-pass-up?` reintroduces the brigade. The main loop is its only
-  consumer, so step 4 is the moment to decide — recommendation: put it in the
-  turn's state, not the return value.
-
 - **Dead vocabulary, all of it waiting on steps 2–3:** `share`, `noun`, `adj`,
   `pre`, and the `GLOBALS`/`SHARED`/`INTANGIBLES` root containers have zero
-  readers. `::exits` is compiled but never executed. `ev-enter`/`ev-leave`/
-  `ev-each-turn` are declared but never raised.
+  readers. `::exits` is compiled but never executed, so the whole exit DSL is
+  still untested in situ — step 1 fixes that. `ev-enter`/`ev-leave` are declared
+  but never raised (`ev-each-turn` now is, by `turn!`).
+
+- **Dynamic-var caveat.** `*turn*` is bound by `turn!`, so anything that escapes
+  that binding loses it — a lazy seq realised later, or work handed to another
+  thread. Fine today (handlers run synchronously, the describers realise eagerly),
+  worth remembering if either changes. `record-turn!` no-ops outside a turn rather
+  than throwing, so repl and scratch calls are safe.
 
 - **Description order** is alphabetical by label, ties broken by key. Arbitrary
   but deterministic, and at least explicable from the output rather than from the

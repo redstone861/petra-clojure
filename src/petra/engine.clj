@@ -324,6 +324,94 @@
   ::handled)
 
 ;; ---------------------------------------------------------------------------
+;; the turn in flight
+;; ---------------------------------------------------------------------------
+;; Some things a handler learns are facts about the TURN, not answers to the
+;; question it was asked. "the clock should not advance" is not a response to
+;; "did you handle this input", and sending both down one return channel is what
+;; ZIL tried first and abandoned (Learning ZIL 8.4): every intermediate routine
+;; had to forward the marker faithfully, which was "lots of extra code and lots
+;; of chances to screw up." They replaced it with state settable from any depth.
+;;
+;; THE LIST OF WHAT LIVES IN HERE IS CLOSED. Keep it that way.
+;;
+;;   :time-passed?   does this input advance the clock, so that ev-each-turn (and
+;;                   later, daemons) run. ZIL's GAME-VERB?.
+;;
+;; That is the entire list. To qualify, a fact must be MEANINGLESS OUTSIDE ONE
+;; TURN. Things that look tempting and do not qualify:
+;;
+;;   score           a quantity belonging to the GAME, not to a turn -- it
+;;                   outlives every turn. a global atom, like OBJECTS and ACTOR.
+;;                   (ZIL's INCREMENT-SCORE is a SETG on a global and prints its
+;;                   notification inline, with no end-of-turn batching.)
+;;   move count      likewise game-scoped.
+;;   what "it" means  persists into the NEXT turn -- "DROP IT" -- so by
+;;                   definition not turn-scoped. ZIL's THIS-IS-IT.
+;;   daemon queue    game-scoped.
+;;   :handled?
+;;   :over?          outcomes `turn!` computes, not signals anybody records. they
+;;                   live in turn!'s return value instead, which keeps the
+;;                   invariant that everything in here was put here on purpose by
+;;                   something during the turn.
+;;
+;; The one plausible future addition is :output? -- did anything print -- which a
+;; WAIT verb needs to stop a multi-turn wait early, and which `tell!` would have
+;; to set from a place that has no context. NOT added, because nothing consumes
+;; it. Anything beyond that deserves an argument first.
+;;
+;; `record-turn!` is private on purpose. The public surface is one named fn per
+;; fact, so this list cannot quietly grow.
+
+(def ^:const default-turn-state
+  {:time-passed? true})
+
+(def ^:dynamic *turn*
+  "the turn in flight, as an atom, bound by `turn!`. dynamic so that code at any
+  depth can record a fact about the turn without every frame in between having to
+  cooperate. nil outside a turn. see the note above for what may go in it, and
+  why that list is closed."
+  nil)
+
+(defn turn-state
+  "what has been recorded about the turn in flight. nil outside a turn."
+  []
+  (when *turn* @*turn*))
+
+(defn- record-turn!
+  [k v]
+  (when *turn* (swap! *turn* assoc k v))
+  nil)
+
+(defn no-time-passes!
+  "this input doesn't advance the clock, so ev-each-turn won't fire. ZIL's
+  GAME-VERB?: meta-verbs like VERBOSE, SAVE, SCORE.
+
+  a no-op outside a turn, so a handler called straight from the repl or a scratch
+  script doesn't blow up."
+  []
+  (record-turn! :time-passed? false))
+
+;; death is NOT one of these flags, and that is the one place ZIL's \"fatal\"
+;; lumped together two unrelated things. a flag is a note the turn carries to its
+;; end; death is an abort -- once the actor is dead, the rest of the handler and
+;; the rest of the chain must not run, or you get "You are crushed by the
+;; boulder. Taken." so it throws. ZIL's JIGS-UP didn't return either.
+
+(defn die!
+  "end the game, printing `msg` (already-rendered text -- use `say` if the line
+  belongs in petra.text). aborts the turn; `turn!` catches it."
+  [& msg]
+  (throw (ex-info "the game is over"
+                  {::game-over true
+                   ::message (apply str msg)})))
+
+(defn game-over?
+  "true if `e` is what die! throws, rather than a real fault."
+  [e]
+  (boolean (::game-over (ex-data e))))
+
+;; ---------------------------------------------------------------------------
 ;; the turn context
 ;; ---------------------------------------------------------------------------
 ;; every fn the engine calls out to -- responder, describer, notification,
@@ -350,6 +438,10 @@
             :k-actor k-actor
             :k-here (room-of k-actor objects)
             :objects objects))))
+;; note: the turn in flight is deliberately NOT in here. one door, `*turn*`, via
+;; the named fns above -- two paths to one atom invited raw swaps that bypassed
+;; the closed list, and gave only the handlers that skip the `handler` macro any
+;; visibility in exchange.
 
 ;; ---------------------------------------------------------------------------
 ;; describers
@@ -580,16 +672,6 @@
 ;; PERFORM
 ;; ---------------------------------------------------------------------------
 
-;; values a responder can return that perform! must pass up to the main loop
-(def ^:const pf-fatal ::pf-fatal)                            ; flush the rest of the input line (ZIL's M-FATAL / P-CONT -1)
-(def ^:const pf-dead ::pf-dead)                              ; the actor died
-
-(defn perform-pass-up?
-  "returns true if the value is one that perform! should pass up to its caller
-  (i.e. the perform had a result that should affect the main loop in some way)."
-  [ret]
-  (contains? #{pf-fatal pf-dead} ret))
-
 (defn try-handle
   "give k's responder a crack at the input. nil if k has no responder at all --
   which perform! wants to be indistinguishable from a responder declining."
@@ -622,13 +704,48 @@
               (respond k-dir)
               ;; and last, the verb default
               (verb (context base nil)))]
-    (if (perform-pass-up? ret)
-      ret
-      false)))                                              ; TODO ev-each-turn raised at end of mainloop
+    ;; one meaning only: did anything consume the input. anything a handler wants
+    ;; to say about the turn itself went to *turn*, not down this channel.
+    (boolean ret)))
 
 (defn perform!
+  "run the responder chain for one input and return whether anything consumed it.
+  this is ZIL's PERFORM, including the habit of calling it yourself from inside a
+  handler to re-dispatch an input as some other verb. it does no turn
+  bookkeeping -- that is `turn!`."
   [verb & {:keys [dir ind pre]}]
   (perform-internal! verb pre dir ind))
+
+;; ---------------------------------------------------------------------------
+;; the turn
+;; ---------------------------------------------------------------------------
+
+(defn turn!
+  "run one whole turn: hand the input to the responder chain, then, if the clock
+  advanced, let the room know the turn ended.
+
+  takes what the parser (plus whatever engine-side post-parsing) worked out: a
+  verb, and optionally a direct object, indirect object and pre-action. a turn is
+  a turn; this doesn't care where they came from.
+
+  returns {:time-passed? :handled? :over?} -- the signals recorded during the
+  turn, plus the two outcomes this fn computes -- so whatever drives turns can
+  decide what to do next."
+  [verb & {:keys [dir ind pre]}]
+  (binding [*turn* (atom default-turn-state)]
+    (try
+      (let [handled? (perform-internal! verb pre dir ind)]
+        (when (:time-passed? (turn-state))
+          (when-let [k-here (room-of @ACTOR)]
+            (notify! k-here ev-each-turn)))
+        (assoc (turn-state) :handled? handled? :over? false))
+      (catch clojure.lang.ExceptionInfo e
+        (if-not (game-over? e)
+          (throw e)
+          (do (tell! (::message (ex-data e)) :>>)
+              (tell! (say ::text/died) :>>)
+              ;; dying is emphatically handling the input
+              (assoc (turn-state) :handled? true :over? true)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; exits
