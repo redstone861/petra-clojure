@@ -669,6 +669,59 @@
    nil))
 
 ;; ---------------------------------------------------------------------------
+;; movement
+;; ---------------------------------------------------------------------------
+
+(defn goto!
+  "move the actor into room `k-room` and describe it. this is fiat, not an
+  attempt: nothing here can refuse. ZIL drew the same line -- \"DO-WALK is just
+  an attempt... GOTO overrides all that, however, and positively sends the player
+  to the given room.\"
+
+  the order is load-bearing, which is the reason this lives in the engine rather
+  than being any old handler that calls move!:
+
+    ev-leave   before the move, so a leave listener still sees the room it is
+               losing, and sees it with the actor still in it
+    move!      before ev-enter, so an enter listener's k-here is already here
+    look!      last, because an enter listener may change what there is to see --
+               ZIL's crypt moves a poltergeist in on M-ENTER and expects the
+               description that follows to mention it
+
+  a listener cannot veto: notifications discard their return value, and refusing
+  a move is the job of a conditional exit or of the room's own responder, which
+  runs in the chain before movement ever happens. (ZIL's TORTURE-CHAMBER-F is
+  exactly that: an M-BEG clause that eats WALK while the player is strapped down.)
+
+  actor-only, since `look!` describes wherever the actor is. moving anything else
+  is `move!` plus whatever notifying you want by hand.
+
+  going to the room the actor is already in is not special-cased: leave and enter
+  both fire. returns the room key."
+  [k-room]
+  (let [k-actor @ACTOR]
+    ;; author errors are loud. an exit pointing at a typo would otherwise land the
+    ;; actor somewhere room-of can't resolve, leaving k-here nil and the game
+    ;; quietly describing nothing at all.
+    (when-not k-actor
+      (throw (ex-info "goto! with no actor set" {:hint "call set-actor! first"})))
+    (when-not (in? k-room ROOMS)
+      (throw (ex-info "goto! target is not a room"
+                      {:target k-room
+                       :hint "rooms are made with def-room, which is what puts them in ROOMS"
+                       :known-rooms (vec (sort (contents ROOMS)))})))
+    (when-let [from (room-of k-actor)]
+      (notify! from ev-leave))
+    (move! k-actor k-room)
+    (notify! k-room ev-enter)
+    ;; arriving is not a LOOK: full? stays false so brief mode still shows the
+    ;; long description only on a first visit, which is the whole job of
+    ;; ::f-visited. (look!) with no args means the player typed LOOK and wants
+    ;; everything -- Learning ZIL 11.3.
+    (look! false)
+    k-room))
+
+;; ---------------------------------------------------------------------------
 ;; PERFORM
 ;; ---------------------------------------------------------------------------
 

@@ -64,6 +64,24 @@
           [west ::green-hallway never "The Green Hallway is forbidden."]
           [down ::cellar via ::green-door]])
 
+;; the far sides of aqua-room's exits, so every exit flavour has somewhere to go
+(room ::green-room
+      label "Green Room"
+      features [lit]
+      desc "Moss carpets the floor from wall to wall."
+      to [[west ::aqua-room]])
+
+(room ::cellar
+      label "Cellar"
+      features [lit]
+      desc "Stone shelves, every one of them empty."
+      to [[up ::aqua-room via ::green-door]])
+
+(room ::green-hallway
+      label "Green Hallway"
+      features [lit]
+      desc "Forbidden, and unremarkable.")
+
 (object ::you
         label "you"
         features [no-article])

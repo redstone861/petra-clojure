@@ -110,3 +110,85 @@
 (swap! OBJECTS update ::d/you dissoc kw-handler)
 
 (println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
+
+;; ---------------------------------------------------------------------------
+;; movement
+;; ---------------------------------------------------------------------------
+
+(println "\n=== goto! ordering: leave -> move -> enter -> look ===")
+(def log (atom []))
+(set-actor! ::d/you)
+(move! ::d/you ::d/god-kingdom)
+(set-frames! petra.text/FRAMES)
+
+;; watch the sequence, and prove each step sees what it should
+(swap! OBJECTS assoc-in [::d/god-kingdom kw-on ev-leave]
+       (fn [ctx] (swap! log conj [:leave (:self ctx) :actor-still-here?
+                                  (in? ::d/you (:self ctx))])))
+(swap! OBJECTS assoc-in [::d/green-room kw-on ev-enter]
+       (fn [ctx] (swap! log conj [:enter (:self ctx) :k-here (:k-here ctx)])
+         ;; an enter listener changes what there is to see; the look after it must notice
+         (move! ::d/hourglass ::d/green-room)))
+(reset! log [])
+(let [ret (atom nil)
+      out (with-out-str (reset! ret (goto! ::d/green-room)))]
+  (chk "returns the room key" ::d/green-room @ret)
+  (chk "leave fired before the move, with the actor still in the old room"
+       [:leave ::d/god-kingdom :actor-still-here? true] (first @log))
+  (chk "enter fired after the move, k-here already the new room"
+       [:enter ::d/green-room :k-here ::d/green-room] (second @log))
+  (chk "exactly two notifications" 2 (count @log))
+  (chk "the actor moved" ::d/green-room (room-of ::d/you))
+  (println "  --- screen ---")
+  (print (clojure.string/replace out #"(?m)^" "  | "))
+  (chk "look! ran, and saw what the enter listener added" true
+       (boolean (re-find #"an hourglass" out)))
+  (chk "and the long description showed on a first visit" true
+       (boolean (re-find #"Moss carpets" out))))
+
+(println "=== f-visited still belongs to look!, not goto! ===")
+(let [out (with-out-str (goto! ::d/god-kingdom))
+      back (with-out-str (goto! ::d/green-room))]
+  (chk "revisiting drops the long description" false
+       (boolean (re-find #"Moss carpets" back)))
+  (chk "but still names the room" true (boolean (re-find #"Green Room" back)))
+  (chk "an explicit look! still forces the long description back" true
+       (boolean (re-find #"Moss carpets" (with-out-str (look!))))))
+
+(println "=== a leave listener cannot veto ===")
+(swap! OBJECTS assoc-in [::d/green-room kw-on ev-leave] (fn [_] false))
+(with-out-str (goto! ::d/god-kingdom))
+(chk "returning false changed nothing" ::d/god-kingdom (room-of ::d/you))
+(swap! OBJECTS update ::d/green-room update kw-on dissoc ev-leave)
+(swap! OBJECTS update ::d/god-kingdom update kw-on dissoc ev-leave)
+(swap! OBJECTS update ::d/green-room update kw-on dissoc ev-enter)
+
+(println "=== author errors are loud ===")
+(chk "a typo'd destination throws rather than teleporting into limbo" true
+     (try (goto! ::d/grene-room) false
+          (catch clojure.lang.ExceptionInfo e (= ::d/grene-room (:target (ex-data e))))))
+(chk "so does pointing an exit at an object instead of a room" true
+     (try (goto! ::d/rusty-pail) false
+          (catch clojure.lang.ExceptionInfo e (some? (:known-rooms (ex-data e))))))
+(chk "and going nowhere with no actor set" true
+     (let [saved @ACTOR]
+       (set-actor! nil)
+       (try (goto! ::d/green-room) false
+            (catch clojure.lang.ExceptionInfo e (some? (:hint (ex-data e))))
+            (finally (set-actor! saved)))))
+(chk "the actor never moved during any of that" ::d/god-kingdom (room-of ::d/you))
+
+(println "=== goto! composes with the exit thunks it doesn't know about ===")
+(with-out-str (goto! ::d/aqua-room))
+(let [exits (prop ::d/aqua-room kw-room-exits)]
+  (clear-feature ::d/green-door ::f-open)
+  (let [r (atom nil) out (with-out-str (reset! r ((get exits ::down))))]
+    (chk "shut door refuses, so nothing to goto!" false @r)
+    (chk "...having said why itself" true (boolean (re-find #"is closed" out))))
+  (set-feature ::d/green-door ::f-open)
+  (let [dest ((get exits ::down))]
+    (chk "open door yields a room" ::d/cellar dest)
+    (with-out-str (goto! dest))
+    (chk "and goto! took us there" ::d/cellar (room-of ::d/you))))
+
+(println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
