@@ -17,8 +17,8 @@
   (cond
     ;; ZIL distinguished these by comparing the PRSO/PRSI globals; here the same
     ;; question is asked of the context, and needs no tag either way.
-    (= self k-ind) (engine/tell! "You can't use the nails for that." :>>)
-    (= self k-dir) (engine/tell! "The nails are rusted into place." :>>)
+    (= self k-iobj) (engine/tell! "You can't use the nails for that." :>>)
+    (= self k-dobj) (engine/tell! "The nails are rusted into place." :>>)
     :else nil))
 
 ;; --- describers: a string, or nil to decline ---------------------------------

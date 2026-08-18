@@ -6,8 +6,8 @@
   applied with (apply engine/perform! (:verb p) (apply concat (dissoc p :verb)))
   or destructured directly. keys are unqualified to match the turn context that
   handlers see."
-  [verb k-dir k-ind & {:keys [pre-verb]}]
-  {:verb verb :dir k-dir :ind k-ind :pre pre-verb})
+  [verb k-dobj k-iobj & {:keys [direction]}]
+  {:verb verb :dobj k-dobj :iobj k-iobj :direction direction})
 
 (defn parse
   "Big shit parse function. Returns (pkg-parse a di io)."

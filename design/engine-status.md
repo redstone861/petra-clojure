@@ -71,13 +71,14 @@ underscores in paths, so the two must differ.
 | Text | all engine prose lives in `src/petra/engine/text.clj` as frames with `{{named slots}}`; `say`/`fill`/`merge-frames!` |
 | Describers | `describe-object` `describe-contents` `describe-room` `look!`; brief/verbose/superbrief |
 | Events | `::on {event fn}` map, open to game-defined namespaced events; `notify!` `listener` |
+| Verbs | keyword → behaviour in `VERBS`; `def-verb` with `handle`/`pre`/`turn?`; `verb-def` `verb-handler` `pre-action` `consumes-turn?` |
 | Dispatch | `perform!` runs actor → room → pre-action → indirect → direct → verb default, and returns whether anything consumed the input |
 | Turn | `turn!` runs one turn and returns its state; `*turn*`/`record-turn!`/`no-time-passes!` for turn-scoped facts; `die!`/`game-over?` |
 | Exits | `to [[north ::room via ::door]]`, five flavours (plain / `if` atom / `with` fn / `via` door / `never`), all compiling to thunks |
 | Definition | `def-object`/`def-room`, aliased `object`/`room`; property table in `prop-symbols-pre` |
 
 Everything the engine calls out to takes **one** argument: the turn context
-(`verb pre-verb k-dir k-ind k-actor k-here self objects turn`).
+(`verb pre-verb k-dobj k-iobj direction k-actor k-here self objects`).
 
 ## Decisions already made — don't relitigate these
 
@@ -157,6 +158,30 @@ Everything the engine calls out to takes **one** argument: the turn context
   runs. (Consequence: the "is `start` a room?" check `goto!` used to provide for
   free had to be written out explicitly, or a `start` naming an object surfaced as
   a vaguer complaint about the actor's position.)
+
+- **A verb is a keyword; the registry maps it to behaviour.** That indirection is
+  the point: `(= verb ::take)` becomes possible, and many input words can name one
+  internal verb (ZIL's `SLICE → V-CUT`). The registry maps **keyword → behaviour**;
+  a lexicon will map **words → keyword** — so synonymy is entirely lexical and has
+  no business in `def-verb`, which is what ZIL's `VERB-SYNONYM` looks like it gets
+  wrong until you notice it lives in the syntax file rather than the verbs file.
+
+  `handle` reuses the object property key on purpose: same contract, different
+  chain position. `pre` belongs to the *verb*, not to a call site — §9.4 requires a
+  PRSA to carry the same pre-action across all its syntaxes — so `perform!` lost
+  its `:pre` argument. `turn?` defaults true and is stated only on meta-verbs
+  (ZIL's `GAME-VERB?`); `turn!` seeds `:time-passed?` from it, with
+  `no-time-passes!` remaining the dynamic override for a one-off.
+
+  `handle` is required, because a verb with no last resort leaves inputs
+  unanswered and "a non-response is always a no-no" (§1.2). Unknown verb at
+  dispatch, a missing `handle`, and an unknown verb property all throw.
+
+  `pre-verb` stays in ctx even though it's derivable, so that ctx alone describes
+  the whole dispatch without consulting the registry. Note this is *not* a licence
+  to group verbs by their shared pre-action — that's coincidental coupling that
+  breaks when the pre-action is split. An explicit `tags` property would be the
+  honest mechanism if verb families ever matter.
 
 - **A game is data, and says nothing about being run.** `def-game` compiles to a
   `CONFIG` map in the game's own namespace; the game folder holds no `-main`, no
@@ -248,8 +273,8 @@ so `walk!` would be a verb default, and the only open part of it is the binding
 (which words mean north, whether a refused move costs a turn). The resolution
 logic is engine, and lands with the exits overhaul.
 
-**2. Verb identity — NEXT (2026-08-19).** *Small to build, wide in consequence.
-Do before the parser.*
+**2. ~~Verb identity~~ — done (2026-08-19).** *Was: small to build, wide in
+consequence.*
 `verb` in ctx is currently a **function**, so `(= verb ::take)` is impossible.
 It should be a namespaced keyword plus a registry:
 
@@ -338,9 +363,9 @@ the world definitions on load.
 
 ## Open questions and known weak spots
 
-- **Dead vocabulary, all of it waiting on steps 2–3:** `share`, `noun`, `adj`,
-  `pre`, and the `GLOBALS`/`SHARED`/`INTANGIBLES` root containers have zero
-  readers. `::exits` is compiled but never executed, so the whole exit DSL is
+- **Dead vocabulary, waiting on `in-scope`:** `share`, `noun`, `adj`, and the
+  `GLOBALS`/`SHARED`/`INTANGIBLES` root containers have zero readers. (`pre` is
+  live now, on verbs.) `::exits` is compiled but never executed, so the whole exit DSL is
   still untested in situ — step 1 fixes that. `ev-enter`/`ev-leave` are declared
   but never raised (`ev-each-turn` now is, by `turn!`).
 

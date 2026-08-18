@@ -4,10 +4,12 @@
   "define a fn the engine can call out to, with the turn context destructured
   into scope:
 
-    verb      the verb fn identified by the parser (ZIL's PRSA)
-    pre-verb  the verb's pre-action, if it has one
-    k-dir     key of the direct object, or nil (PRSO)
-    k-ind     key of the indirect object, or nil (PRSI)
+    verb      the verb KEYWORD identified by the parser (ZIL's PRSA)
+    pre-verb  the verb's pre-action, if it has one. derived from `verb`, but
+              carried so that ctx alone describes the whole dispatch
+    k-dobj    key of the direct object, or nil (PRSO)
+    k-iobj    key of the indirect object, or nil (PRSI)
+    direction key of the direction, for movement verbs, or nil
     k-actor   key of whoever is acting this turn (WINNER)
     k-here    key of the room k-actor is in (HERE)
     self      key of the object this fn was installed on
@@ -25,6 +27,6 @@
   which is why one macro serves all three."
   [name & body]
   `(defn ~name [ctx#]
-     (let [{:keys [~'verb ~'pre-verb ~'k-dir ~'k-ind ~'k-actor ~'k-here
-                   ~'self ~'objects]} ctx#]
+     (let [{:keys [~'verb ~'pre-verb ~'k-dobj ~'k-iobj ~'direction
+                   ~'k-actor ~'k-here ~'self ~'objects]} ctx#]
        ~@body)))

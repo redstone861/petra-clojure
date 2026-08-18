@@ -10,6 +10,7 @@
 (def ^:const kw-room-exits ::exits)
 (def ^:const kw-handler ::handler)
 (def ^:const kw-pre-handler ::pre-handler)
+(def ^:const kw-turn? ::turn?)
 (def ^:const kw-features ::features)
 
 ;; features. authors write these as bare symbols -- (features [lit open]) -- see
@@ -764,6 +765,79 @@
     k-room))
 
 ;; ---------------------------------------------------------------------------
+;; verbs
+;; ---------------------------------------------------------------------------
+;; A verb is a namespaced keyword; the registry maps it to behaviour. That
+;; indirection is the whole point: `(= verb ::take)` becomes possible, and many
+;; input words can name one internal verb -- ZIL's SLICE -> V-CUT.
+;;
+;; The registry maps KEYWORD -> BEHAVIOUR. A lexicon will map WORDS -> KEYWORD.
+;; Synonymy is therefore entirely lexical and has no business here, which is what
+;; ZIL's VERB-SYNONYM looks like it gets wrong until you notice it lives in the
+;; syntax file rather than the verbs file.
+
+(def VERBS (atom {}))
+
+(def verb-symbols
+  {'handle kw-handler                                       ; same key as objects: same contract
+   'pre    kw-pre-handler                                    ; ZIL's PRE-, and it belongs to the VERB
+   'turn?  kw-turn?})                                        ; default true; say false for meta-verbs
+
+(defn verb-def
+  ([v] (verb-def v @VERBS))
+  ([v verbs] (get verbs v)))
+
+(defn verb-prop [v attr] (get (verb-def v) attr))
+
+(defn verb-handler
+  "the verb's default -- the last resort in the chain. required, so always there."
+  [v]
+  (verb-prop v kw-handler))
+
+(defn pre-action
+  "the verb's pre-action, or nil. In ZIL this was declared per-syntax, and 9.4 is
+  explicit that a PRSA must carry the SAME pre-action across all of its syntaxes --
+  so it is a property of the verb, not of a call site."
+  [v]
+  (verb-prop v kw-pre-handler))
+
+(defn consumes-turn?
+  "does this verb advance the clock? true unless the verb says otherwise. ZIL's
+  GAME-VERB?, except stated once on the verb instead of kept as a list."
+  [v]
+  (boolean (get (verb-def v) kw-turn? true)))
+
+(defn make-verb [v properties]
+  (swap! VERBS assoc v properties)
+  v)
+
+(defmacro def-verb
+  "define a verb.
+
+    (def-verb ::take   handle v-take)
+    (def-verb ::shoot  pre pre-shoot  handle v-shoot)
+    (def-verb ::save   turn? false    handle v-save)
+
+  `handle` is required: a verb with no last resort leaves inputs unanswered, and
+  a non-response is always a no-no (Learning ZIL 1.2). A one-line stub is fine."
+  [verb-key & properties]
+  (when-not (even? (count properties))
+    (throw (ex-info "def-verb needs property/value pairs" {:verb verb-key})))
+  (let [pairs (partition 2 properties)]
+    (when-not (some #{'handle} (map first pairs))
+      (throw (ex-info "a verb needs a `handle`"
+                      {:verb verb-key
+                       :hint "without a default, inputs using this verb go unanswered"})))
+    (let [m (into {}
+                  (for [[k v] pairs]
+                    (if-let [verb-key' (get verb-symbols k)]
+                      [verb-key' v]
+                      (throw (ex-info "Unknown verb property"
+                                      {:property k :verb verb-key
+                                       :known (vec (sort (keys verb-symbols)))})))))]
+      `(make-verb ~verb-key ~m))))
+
+;; ---------------------------------------------------------------------------
 ;; PERFORM
 ;; ---------------------------------------------------------------------------
 
@@ -775,8 +849,15 @@
     (h ctx)))
 
 (defn perform-internal!
-  [verb pre-verb k-dir k-ind]
-  (let [base {:verb verb :pre-verb pre-verb :k-dir k-dir :k-ind k-ind}
+  [verb k-dobj k-iobj direction]
+  (when-not (verb-def verb)
+    (throw (ex-info "unknown verb"
+                    {:verb verb
+                     :hint "define it with def-verb"
+                     :known (vec (sort (keys @VERBS)))})))
+  (let [pre-verb (pre-action verb)
+        base {:verb verb :pre-verb pre-verb
+              :k-dobj k-dobj :k-iobj k-iobj :direction direction}
         respond (fn [k-self]
                   (when k-self
                     (try-handle k-self (context base k-self))))
@@ -794,11 +875,11 @@
               ;; objects rather than behind them like the verb default
               (and pre-verb (pre-verb (context base nil)))
               ;; then the indirect object, then the direct object. a responder
-              ;; that needs to know which it is asks (= self k-ind) / (= self k-dir).
-              (respond k-ind)
-              (respond k-dir)
+              ;; that needs to know which it is asks (= self k-iobj) / (= self k-dobj).
+              (respond k-iobj)
+              (respond k-dobj)
               ;; and last, the verb default
-              (verb (context base nil)))]
+              ((verb-handler verb) (context base nil)))]
     ;; one meaning only: did anything consume the input. anything a handler wants
     ;; to say about the turn itself went to *turn*, not down this channel.
     (boolean ret)))
@@ -808,8 +889,8 @@
   this is ZIL's PERFORM, including the habit of calling it yourself from inside a
   handler to re-dispatch an input as some other verb. it does no turn
   bookkeeping -- that is `turn!`."
-  [verb & {:keys [dir ind pre]}]
-  (perform-internal! verb pre dir ind))
+  [verb & {:keys [dobj iobj direction]}]
+  (perform-internal! verb dobj iobj direction))
 
 ;; ---------------------------------------------------------------------------
 ;; the turn
@@ -826,10 +907,11 @@
   returns {:time-passed? :handled? :over?} -- the signals recorded during the
   turn, plus the two outcomes this fn computes -- so whatever drives turns can
   decide what to do next."
-  [verb & {:keys [dir ind pre]}]
-  (binding [*turn* (atom default-turn-state)]
+  [verb & {:keys [dobj iobj direction]}]
+  (binding [*turn* (atom (assoc default-turn-state
+                                :time-passed? (consumes-turn? verb)))]
     (try
-      (let [handled? (perform-internal! verb pre dir ind)]
+      (let [handled? (perform-internal! verb dobj iobj direction)]
         (when (:time-passed? (turn-state))
           (when-let [k-here (room-of @ACTOR)]
             (notify! k-here ev-each-turn)))
@@ -979,7 +1061,6 @@
                    'features (fn [fs] {kw-features (features-preproc fs)})
                    ;; the responder: truthy return means "I consumed the input"
                    'handle (fn [f] {kw-handler f})
-                   'pre (fn [f] {kw-pre-handler f})
                    'noun (fn [heads] {kw-label-heads (apply hash-set heads)})
                    'adj (fn [mods] {kw-label-modifiers (apply hash-set mods)})
                    'fdesc (fn [x] {kw-description-first x})

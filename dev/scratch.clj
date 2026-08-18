@@ -18,28 +18,37 @@
 (set-actor! ::d/you)
 (move! ::d/you ::d/god-kingdom)
 
+;; verbs are keywords now, so a throwaway test verb needs a name
+(def verb-counter (atom 0))
+(defn as-verb!
+  ([f] (as-verb! f {}))
+  ([f props]
+   (let [k (keyword "petra.engine.core" (str "tv-" (swap! verb-counter inc)))]
+     (make-verb k (assoc props kw-handler f))
+     k)))
+
 (println "\n=== perform! means one thing again: did anything consume the input ===")
 (make-object ::mute {kw-label "mute thing"})
 (make-object ::speaker {kw-label "speaker" kw-handler (fn [_] ::handled)})
-(chk "nobody handled it"        false (perform! (fn [_] nil) :dir ::mute))
-(chk "an object handled it"     true  (perform! (fn [_] nil) :dir ::speaker))
-(chk "the verb default handled it" true (perform! (fn [_] ::handled) :dir ::mute))
+(chk "nobody handled it"        false (perform! (as-verb! (fn [_] nil)) :dobj ::mute))
+(chk "an object handled it"     true  (perform! (as-verb! (fn [_] nil)) :dobj ::speaker))
+(chk "the verb default handled it" true (perform! (as-verb! (fn [_] ::handled)) :dobj ::mute))
 
 (println "\n=== turn! reports the turn, and raises ev-each-turn ===")
 (def ticks (atom 0))
 (swap! OBJECTS assoc-in [::d/god-kingdom kw-on ev-each-turn] (fn [_] (swap! ticks inc)))
 (reset! ticks 0)
 (chk "a normal turn" {:time-passed? true :handled? true :over? false}
-     (turn! (fn [_] ::handled)))
+     (turn! (as-verb! (fn [_] ::handled))))
 (chk "the room heard the turn end" 1 @ticks)
 (chk "an unhandled turn still passes time" {:time-passed? true :handled? false :over? false}
-     (turn! (fn [_] nil)))
+     (turn! (as-verb! (fn [_] nil))))
 (chk "so the room heard that one too" 2 @ticks)
 
 (println "\n=== no-time-passes! -- and from arbitrary depth, the whole point ===")
 (reset! ticks 0)
 (chk "a handler suppresses the clock" {:time-passed? false :handled? true :over? false}
-     (turn! (fn [_] (no-time-passes!) ::handled)))
+     (turn! (as-verb! (fn [_] (no-time-passes!) ::handled))))
 (chk "so no ev-each-turn" 0 @ticks)
 
 ;; a plain helper: no ctx, no idea it's inside a turn, three frames deep
@@ -49,14 +58,14 @@
 (reset! ticks 0)
 (chk "recorded from three frames down, with no ctx threaded"
      {:time-passed? false :handled? true :over? false}
-     (turn! (fn [_] (deeper-still) ::handled)))
+     (turn! (as-verb! (fn [_] (deeper-still) ::handled))))
 (chk "clock still suppressed" 0 @ticks)
 
 (println "\n=== turn state is per-turn and doesn't leak ===")
 (reset! ticks 0)
-(turn! (fn [_] (no-time-passes!) ::handled))
+(turn! (as-verb! (fn [_] (no-time-passes!) ::handled)))
 (chk "the next turn starts clean" {:time-passed? true :handled? true :over? false}
-     (turn! (fn [_] ::handled)))
+     (turn! (as-verb! (fn [_] ::handled))))
 (chk "and that one ticked" 1 @ticks)
 (chk "outside a turn, turn-state is nil" nil (turn-state))
 (chk "and recording is a harmless no-op" nil (no-time-passes!))
@@ -79,8 +88,8 @@
 (swap! OBJECTS assoc-in [::d/you kw-handler]
        (fn [_] (die! "The boulder finds you at last.")))
 (let [out (atom nil)
-      st (with-out-str (reset! out (turn! (fn [_] (swap! reached conj :verb-default) ::handled)
-                                         :dir ::doomed)))]
+      st (with-out-str (reset! out (turn! (as-verb! (fn [_] (swap! reached conj :verb-default) ::handled))
+                                        :dobj ::doomed)))]
   (chk "turn comes back over?" true (:over? @out))
   (chk "nothing further in the chain ran" [] @reached)
   (chk "no ev-each-turn after death" 0 @ticks)
@@ -93,18 +102,18 @@
 (defn- swallowed-by-a-grue [] (die! "You are eaten by a grue."))
 (swap! OBJECTS assoc-in [::d/you kw-handler] (fn [_] (swallowed-by-a-grue)))
 (let [st (atom nil)]
-  (with-out-str (reset! st (turn! (fn [_] ::handled))))
+  (with-out-str (reset! st (turn! (as-verb! (fn [_] ::handled)))))
   (chk "die! works from a helper too" true (:over? @st)))
 (swap! OBJECTS assoc-in [::d/you kw-handler] (fn [_] (throw (ex-info "boom" {:real-bug true}))))
 (chk "a genuine ExceptionInfo is not swallowed as death" "boom"
-     (try (turn! (fn [_] ::handled)) :no-throw
+     (try (turn! (as-verb! (fn [_] ::handled))) :no-throw
           (catch clojure.lang.ExceptionInfo e (ex-message e))))
 (swap! OBJECTS update ::d/you dissoc kw-handler)
 
 (println "\n=== the death line is authorable like any other ===")
 (merge-frames! {::text/died "*** Your adventure ends here. ***"})
 (swap! OBJECTS assoc-in [::d/you kw-handler] (fn [_] (die! "The floor gives way.")))
-(println (clojure.string/replace (with-out-str (turn! (fn [_] ::handled)))
+(println (clojure.string/replace (with-out-str (turn! (as-verb! (fn [_] ::handled))))
                                  #"(?m)^" "  | "))
 (set-frames! petra.engine.text/FRAMES)
 (swap! OBJECTS update ::d/you dissoc kw-handler)
@@ -261,4 +270,79 @@
 (swap! OBJECTS update ::d/god-kingdom update kw-on dissoc ev-enter)
 (swap! OBJECTS update ::d/god-kingdom update kw-on dissoc ev-leave)
 
+(println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
+
+;; ---------------------------------------------------------------------------
+;; verbs
+;; ---------------------------------------------------------------------------
+
+(println "\n=== def-verb compiles to a plain map in the registry ===")
+(def-verb ::v-plain handle (fn [_] ::handled))
+(chk "registered under its keyword" true (some? (verb-def ::v-plain)))
+(chk "handle lands on the same key objects use" true
+     (fn? (verb-handler ::v-plain)))
+(chk "no pre by default" nil (pre-action ::v-plain))
+(chk "consumes a turn by default" true (consumes-turn? ::v-plain))
+
+(def-verb ::v-meta turn? false handle (fn [_] ::handled))
+(chk "turn? false is respected" false (consumes-turn? ::v-meta))
+(chk "and the author writes nothing for the default case" true (consumes-turn? ::v-plain))
+
+(println "\n=== turn! seeds the clock from the verb, no no-time-passes! needed ===")
+(chk "a meta-verb doesn't advance the clock"
+     {:time-passed? false :handled? true :over? false} (turn! ::v-meta))
+(chk "an ordinary one does"
+     {:time-passed? true :handled? true :over? false} (turn! ::v-plain))
+(chk "and no-time-passes! still overrides, for a one-off"
+     false (:time-passed? (turn! (as-verb! (fn [_] (no-time-passes!) ::handled)))))
+
+(println "\n=== pre-actions belong to the verb, and reach the chain ===")
+(def order (atom []))
+(def-verb ::v-pre
+  pre    (fn [_] (swap! order conj :pre) nil)
+  handle (fn [_] (swap! order conj :default) ::handled))
+(reset! order [])
+(turn! ::v-pre)
+(chk "pre ran before the default" [:pre :default] @order)
+(chk "pre-action is looked up, not passed in" true (fn? (pre-action ::v-pre)))
+(reset! order [])
+(chk "a pre that handles stops the chain" true
+     (do (make-verb ::v-pre-stops {kw-pre-handler (fn [_] (swap! order conj :pre) ::handled)
+                                   kw-handler     (fn [_] (swap! order conj :default) ::handled)})
+         (turn! ::v-pre-stops)
+         (= [:pre] @order)))
+
+(println "\n=== ctx carries the verb keyword, its pre, and a direction ===")
+(def seen-ctx (atom nil))
+(def-verb ::v-probe
+  pre    (fn [_] nil)
+  handle (fn [ctx] (reset! seen-ctx ctx) ::handled))
+(turn! ::v-probe :dobj ::d/rusty-pail :iobj ::d/tin-cup :direction kw-north)
+(chk "verb is the keyword" ::v-probe (:verb @seen-ctx))
+(chk "pre-verb is the verb's own pre" true (identical? (pre-action ::v-probe) (:pre-verb @seen-ctx)))
+(chk "direct object" ::d/rusty-pail (:k-dobj @seen-ctx))
+(chk "indirect object" ::d/tin-cup (:k-iobj @seen-ctx))
+(chk "direction" ::north (:direction @seen-ctx))
+
+(println "\n=== a responder can group verbs by name now ===")
+(def-verb ::v-a handle (fn [_] nil))
+(def-verb ::v-b handle (fn [_] nil))
+(make-object ::picky
+             {kw-label "picky thing"
+              kw-handler (fn [{:keys [verb]}]
+                           (when (#{::v-a ::v-b} verb) (tell! "Not those." :>>)))})
+(defn- consumed? [v] (let [r (atom nil)] (with-out-str (reset! r (perform! v :dobj ::picky))) @r))
+(chk "a named verb in the set is consumed" true (consumed? ::v-a))
+(def-verb ::v-c handle (fn [_] nil))                     ; a default that declines
+(chk "one outside it falls through, and nothing else claims it" false (consumed? ::v-c))
+
+(println "\n=== author errors are loud ===")
+(defn- boom [f] (try (f) :no-throw (catch Throwable e (str (ex-message e) (ex-message (or (ex-cause e) e))))))
+(chk "unknown verb at dispatch" true
+     (boolean (re-find #"unknown verb" (boom #(perform! ::no-such-verb)))))
+(chk "a verb with no handle won't compile" true
+     (boolean (re-find #"needs a `handle`" (boom #(eval '(petra.engine.core/def-verb ::nope turn? false))))))
+(chk "an unknown verb property won't compile" true
+     (boolean (re-find #"Unknown verb property"
+                       (boom #(eval '(petra.engine.core/def-verb ::nope2 wibble 1 handle (fn [_] nil)))))))
 (println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))

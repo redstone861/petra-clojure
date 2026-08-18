@@ -6,63 +6,56 @@
 
 (require '[petra.engine.core :as e]
          '[petra.engine.text :as t])
-(refer 'petra.engine.core :only '[object room def-game])
+(refer 'petra.engine.core :only '[object room def-game def-verb])
 
 ;; ---------------------------------------------------------------------------
 ;; verbs
 ;; ---------------------------------------------------------------------------
-;; Verbs are still bare fns rather than keywords, which is the next thing to fix:
-;; note how a responder below has to compare them by identity, and how walking
-;; needs one fn per direction because there's nowhere in the context to put one.
+;; A verb is a keyword; the registry holds its behaviour. Note what this bought:
+;; one ::walk instead of one fn per direction, and a responder below that says
+;; (= verb ::walk) instead of comparing function objects.
 
-(def v-look (fn [_] (e/look!)))
+(def-verb ::look
+  handle (fn [_] (e/look!)))
 
-(def v-take
-  (fn [{:keys [k-dir k-actor]}]
-    (e/move! k-dir k-actor)
-    (e/tell! "Taken." :>>)))
+(def-verb ::take
+  handle (fn [{:keys [k-dobj k-actor]}]
+           (e/move! k-dobj k-actor)
+           (e/tell! "Taken." :>>)))
 
-(def v-drop
-  (fn [{:keys [k-dir k-here]}]
-    (e/move! k-dir k-here)
-    (e/tell! "Dropped." :>>)))
+(def-verb ::drop
+  handle (fn [{:keys [k-dobj k-here]}]
+           (e/move! k-dobj k-here)
+           (e/tell! "Dropped." :>>)))
 
-(def v-open
-  (fn [{:keys [k-dir]}]
-    (e/set-feature k-dir ::e/f-open)
-    (e/tell! "You open " :the k-dir "." :>>)))
+(def-verb ::open
+  handle (fn [{:keys [k-dobj]}]
+           (e/set-feature k-dobj ::e/f-open)
+           (e/tell! "You open " :the k-dobj "." :>>)))
 
 (def BELL-RUNG (atom false))
 
-(def v-ring
-  (fn [{:keys [k-dir]}]
-    (reset! BELL-RUNG true)
-    (e/tell! "You shake " :the k-dir ". The note goes on much too long." :>>)))
+(def-verb ::ring
+  handle (fn [{:keys [k-dobj]}]
+           (reset! BELL-RUNG true)
+           (e/tell! "You shake " :the k-dobj ". The note goes on much too long." :>>)))
 
-;; a meta-verb: it says something, but the world does not move
-(def v-verbose
-  (fn [_]
-    (e/set-verbosity! e/v-verbose)
-    (e/no-time-passes!)
-    (e/tell! "Maximum verbosity." :>>)))
+;; a meta-verb: it says something, but the world does not move. `turn? false`
+;; replaces having to remember to call no-time-passes! in the body.
+(def-verb ::verbose
+  turn?  false
+  handle (fn [_]
+           (e/set-verbosity! e/v-verbose)
+           (e/tell! "Maximum verbosity." :>>)))
 
 ;; The bit we deliberately kept OUT of the engine: resolving a direction against
 ;; the room's exits is the verb layer's job. goto! does the moving.
-(defn- walking [dir]
-  (fn [{:keys [k-here]}]
-    (if-let [thunk (get (e/prop k-here e/kw-room-exits) dir)]
-      (when-let [dest (thunk)] (e/goto! dest))
-      (e/tell! (e/say ::t/cant-go) :>>))
-    ::e/handled))
-
-(def go-north (walking e/kw-north))
-(def go-south (walking e/kw-south))
-(def go-east  (walking e/kw-east))
-(def go-west  (walking e/kw-west))
-(def go-down  (walking e/kw-down))
-(def go-up    (walking e/kw-up))
-
-(def walk-verbs #{go-north go-south go-east go-west go-down go-up})
+(def-verb ::walk
+  handle (fn [{:keys [k-here direction]}]
+           (if-let [thunk (get (e/prop k-here e/kw-room-exits) direction)]
+             (when-let [dest (thunk)] (e/goto! dest))
+             (e/tell! (e/say ::t/cant-go) :>>))
+           ::e/handled))
 
 ;; ---------------------------------------------------------------------------
 ;; handlers
@@ -71,7 +64,7 @@
 ;; A room responder, sitting in the chain ahead of the verb default -- this is
 ;; ZIL's M-BEG, and vetoing movement is exactly what it was for.
 (defn crypt-h [{:keys [verb k-actor]}]
-  (when (and (walk-verbs verb) (e/ultimately-in? ::deed k-actor))
+  (when (and (= verb ::walk) (e/ultimately-in? ::deed k-actor))
     (e/tell! "You have the deed in your hands, and the shelves do not like it." :>>)))
 
 ;; An each-turn listener with a counter, which is how ZIL's I-TRUCK worked.
@@ -185,31 +178,31 @@
 (println)
 (e/boot! CONFIG)
 
-(cmd "take lantern"  v-take :dir ::lantern)
-(cmd "drop lantern"  v-drop :dir ::lantern)
-(cmd "look"          v-look)
-(cmd "north"         go-north)
-(cmd "west"          go-west)
-(cmd "east"          go-east)
-(cmd "down"          go-down)
-(cmd "open trapdoor" v-open :dir ::trapdoor)
-(cmd "down"          go-down)
-(cmd "up"            go-up)
-(cmd "south"         go-south)
-(cmd "take lantern"  v-take :dir ::lantern)
-(cmd "verbose"       v-verbose)
-(cmd "north"         go-north)
-(cmd "open strongbox" v-open :dir ::strongbox)
-(cmd "take bell"     v-take :dir ::bell)
-(cmd "ring bell"     v-ring :dir ::bell)
-(cmd "east"          go-east)
-(cmd "west"          go-west)
-(cmd "down"          go-down)
-(cmd "open urn"      v-open :dir ::urn)
-(cmd "take deed"     v-take :dir ::deed)
-(cmd "up"            go-up)                              ; the room refuses
-(cmd "drop deed"     v-drop :dir ::deed)
-(cmd "up"            go-up)                              ; now it lets you
-(cmd "down"          go-down)                            ; back down once too often
+(cmd "take lantern"   ::take :dobj ::lantern)
+(cmd "drop lantern"   ::drop :dobj ::lantern)
+(cmd "look"           ::look)
+(cmd "north"         ::walk :direction e/kw-north)
+(cmd "west"          ::walk :direction e/kw-west)
+(cmd "east"          ::walk :direction e/kw-east)
+(cmd "down"          ::walk :direction e/kw-down)
+(cmd "open trapdoor"  ::open :dobj ::trapdoor)
+(cmd "down"          ::walk :direction e/kw-down)
+(cmd "up"            ::walk :direction e/kw-up)
+(cmd "south"         ::walk :direction e/kw-south)
+(cmd "take lantern"   ::take :dobj ::lantern)
+(cmd "verbose"        ::verbose)
+(cmd "north"         ::walk :direction e/kw-north)
+(cmd "open strongbox" ::open :dobj ::strongbox)
+(cmd "take bell"      ::take :dobj ::bell)
+(cmd "ring bell"      ::ring :dobj ::bell)
+(cmd "east"          ::walk :direction e/kw-east)
+(cmd "west"          ::walk :direction e/kw-west)
+(cmd "down"          ::walk :direction e/kw-down)
+(cmd "open urn"       ::open :dobj ::urn)
+(cmd "take deed"      ::take :dobj ::deed)
+(cmd "up"            ::walk :direction e/kw-up)                              ; the room refuses
+(cmd "drop deed"      ::drop :dobj ::deed)
+(cmd "up"            ::walk :direction e/kw-up)                              ; now it lets you
+(cmd "down"          ::walk :direction e/kw-down)                            ; back down once too often
 
 (println "\n=======================================")
