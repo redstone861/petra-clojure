@@ -6,9 +6,9 @@
 
 Petra is a text-adventure engine in Clojure. Two halves:
 
-1. **The engine** (`src/petra/engine.clj`) — the substrate: objects, rooms,
-   containment, descriptions, event dispatch, and the handler chain that decides
-   who responds to the player's input. Its lineage is Infocom's ZIL, via
+1. **The engine** (`src/petra/engine.clj`) — objects, rooms, containment,
+   descriptions, event dispatch, and the handler chain that decides who responds
+   to the player's input. Its lineage is Infocom's ZIL, via
    `design/Learning_ZIL_Steven_Eric_Meretzky_1995.pdf`.
 
 2. **The parser** (`src/petra/syntactic.clj`) — the actual idea, and the reason
@@ -114,6 +114,36 @@ Everything the engine calls out to takes **one** argument: the turn context
   `swap!`s that bypassed the closed list, and bought visibility only for handlers
   that skip the `handler` macro — which doesn't destructure it anyway.
 
+- **Where the engine ends: the engine owns what its data model ENTAILS; the game
+  owns what the data model leaves open.** Petra commits to a classic Connected
+  Rooms layout — rooms holding objects, movement between them, `::exits`,
+  `::f-visited` — so "arriving in a room shows you the room" is not one policy
+  among several, it is an entailment. `describe-room`'s structure is the read side
+  of the commitment `def-room` makes on the write side, and `goto!`'s ordering is
+  a mechanism guarantee rather than a preference. Both are engine.
+
+  It comes out as three layers, and the middle one already exists:
+
+  | layer | owns | e.g. |
+  |---|---|---|
+  | `engine.clj` | what the data model entails | describer structure, brief/verbose/first-visit, `goto!`'s ordering |
+  | `text.clj` | the wording | `::contents-listing`, `::too-dark`, `::died` |
+  | game / lexicon | bindings and content | which words mean "look", which rooms exist |
+
+  There is **no fourth "substrate" layer coming**, and the describers are not
+  destined to leave. ZIL's substrate/game split was not an architectural
+  boundary — §14.3 describes it as what's left after taking a previous game and
+  stripping out its specifics, and every game compiled its own editable copy. It
+  was a workflow artifact, so it is not evidence about layering here. (The one
+  thing ZIL did treat as inviolable was the parser.)
+
+  Corollary for later: exit *resolution* is engine, being the reader for
+  `::exits`. Only the *binding* is open — which words mean north, whether the verb
+  is WALK or GO, whether a refused move costs a turn. Likewise the eventual
+  `::look` verb default is an empty wrapper around `look!`, which is why `look!`
+  belongs in the engine: making it a verb would move the wrapper and leave
+  everything of substance behind.
+
 - **Death is an abort, not a flag.** ZIL's "fatal" lumped together three
   unrelated things. Discarding queued input and "the clock didn't advance" are
   *notes the turn carries to its end*; death must stop the rest of the handler and
@@ -137,14 +167,29 @@ decisions rather than implementation ("a key appears in at most one parent's
 contains-set" survives every API change contemplated) — about five assertions,
 not a suite.
 
-**1. `goto!` / `walk!`** — ~25 lines, and the fastest route to something playable.
-Nothing in the engine currently *runs* an exit thunk, so the whole exit DSL is
-untested in situ. `walk!` looks up the room's exit for a direction and runs it;
-`goto!` raises `ev-leave`, `move!`s the actor, raises `ev-enter`, and calls
-`look!`. Also the first consumer of `ev-enter`/`ev-leave`, which are declared and
-never raised.
+**1. ~~`goto!`~~ — done (2026-08-18).** Raises `ev-leave`, `move!`s the actor,
+raises `ev-enter`, then `look!`. That order is the reason it's engine and not just
+any handler calling `move!`: a leave listener must still see the room it's losing,
+an enter listener's `k-here` must already be the destination, and the description
+must come last because an enter listener can change what there is to see (ZIL's
+crypt moves a poltergeist in on `M-ENTER`). Throws loudly on a destination that
+isn't a room, or with no actor set — an exit pointing at a typo would otherwise
+leave `k-here` nil and the game silently describing nothing. First consumer of
+`ev-enter`/`ev-leave`, and the first time the exit DSL has actually executed as
+part of engine flow.
 
-**2. Verb identity** — *small to build, wide in consequence. Do before the parser.*
+Caught while building it: `goto!` calling `(look!)` forced the long description on
+every arrival, because `look!`'s 0-arity means "the player typed LOOK". That made
+`::f-visited` inert — arrival now passes `full? false`, so brief mode shows the
+long description only on a first visit (§11.3).
+
+**No `walk!`.** A verb default is the same thing as a handler — a fn taking ctx —
+so `walk!` would be a verb default, and the only open part of it is the binding
+(which words mean north, whether a refused move costs a turn). The resolution
+logic is engine, and lands with the exits overhaul.
+
+**2. Verb identity — NEXT (2026-08-19).** *Small to build, wide in consequence.
+Do before the parser.*
 `verb` in ctx is currently a **function**, so `(= verb ::take)` is impossible.
 It should be a namespaced keyword plus a registry:
 
@@ -162,7 +207,35 @@ verb synonymy is free: many lexical entries, one keyword. Two things fall out �
 `perform!` loses its `:pre` argument (the registry knows), and the currently-unread
 `pre` property moves from the object to the verb, where ZIL had it.
 
-**3. `in-scope`** — *the parser contract.* "Which objects can the player refer to
+`dev/demo.clj` is the evidence. Because verbs are bare fns there, walking needs
+one fn per direction (`go-north`, `go-south`, …) since the context has nowhere to
+put a direction; and the crypt's responder has to compare verbs by **object
+identity**, which forces the walk verbs to be `def`d rather than built inline —
+`(walking dir)` returns a fresh fn each call, so an inline one would never match.
+That friction is the argument, in working code.
+
+Design note from the exits discussion: a direction wants its **own context slot**,
+not `k-dir`. `k-dir` means direct object, a direction isn't an object, and
+handlers now rely on `(= self k-dir)` to tell PRSO from PRSI. `design/lexer-parser.txt`
+already leans this way with `CAT :DIR`.
+
+**3. Exits overhaul — under consideration (2026-08-19).** Exits are the last place
+the engine prints from inside a decision: a thunk both decides and `tell!`s its
+refusal, which is the print-as-you-go pattern the describers were cured of. Making
+them return data instead (`{:to k}` / `{:refused …}`) would finish that job and
+make them testable without capturing stdout. Two things to fold in:
+
+- the `with` (FEXIT) fn currently receives only the declared room key, so it can't
+  see the actor or check inventory. Parked from the `goto!` discussion — extend it
+  to take the context.
+- exit *resolution* belongs in the engine (it's the reader for `::exits`, the
+  counterpart to `with-to`'s writer). Only the *binding* is open, which is why
+  `walking` lives in `dev/demo.clj` today.
+
+Per-direction *declarative* vetoes should get their ergonomics here rather than by
+growing a new contract — the room's responder already handles the room-wide case.
+
+**4. `in-scope`** — *the parser contract.* "Which objects can the player refer to
 this turn?" = the room, what's visibly in it, the actor's inventory, the room's
 `share` list, and `GLOBALS`. Then the boundary is clean: **engine supplies scope,
 parser matches `noun`/`adj` against it.**
@@ -173,7 +246,7 @@ be able to refer to the door in order to open it. Doors are the canonical
 local-global (§7.4). Use that as the test case. (ZIL also split `VISIBLE?` from
 `ACCESSIBLE?` — build one `in-scope` now, split it when a verb needs it.)
 
-**4. ~~The turn~~ — done (2026-08-18).** `turn!` runs one whole turn: the
+**5. ~~The turn~~ — done (2026-08-18).** `turn!` runs one whole turn: the
 responder chain, then `ev-each-turn` on the room if the clock advanced. Returns
 `{:time-passed? :handled? :over?}` plus anything else a handler recorded, so new
 turn-scoped facts never change its signature. `perform!` is now just the chain,
@@ -190,8 +263,9 @@ one input per turn there are no queued commands to discard, so ZIL's `M-FATAL`
 has no reason to exist here. If chaining ever arrives, it's `record-turn!` with
 one more key and a caller that stops early.
 
-**5. `take`/`drop`, a `PLAYER` object, `f-takeable`.** The first two real verbs,
-which prove steps 2 and 3 together.
+**6. `take`/`drop`, a `PLAYER` object, `f-takeable`.** The first two real verbs,
+which prove verb identity and `in-scope` together. (`dev/demo.clj` fakes both
+today, without any takeability check at all.)
 
 After that the parser has a stable surface to target: a verb keyword, a scope
 set, and `perform!`.
