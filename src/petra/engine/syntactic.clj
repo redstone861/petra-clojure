@@ -1,4 +1,5 @@
 (ns petra.engine.syntactic
+  (:require [clojure.string])
   (:gen-class))
 
 (def V :V)
@@ -127,7 +128,10 @@
   (if-not sel
     [] ; this element did not have sel (i.e., it is a cso)
     (let [vsel (vec sel)
-          head-idx (.indexOf vsel (first (filter :head vsel)))
+          ;; TODO: a frame with no :head gives head-idx nil, and the subvec below
+          ;; then throws something obscure. should be a named error naming the
+          ;; offending lexical entry.
+          head-idx (first (keep-indexed (fn [i x] (when (:head x) i)) vsel))
           left  (subvec vsel 0 head-idx)
           right (subvec vsel (inc head-idx))
           ;; Given a side, produce all inclusion patterns respecting order
