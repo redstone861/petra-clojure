@@ -302,20 +302,22 @@ Everything the engine calls out to takes **one** argument: the turn context
 
 ## Next steps, in order
 
-**0. ~~Real tests~~ — deliberately deferred (2026-08-18).** Sam's call, and a
-reasonable one: the engine's shape is still moving, so tests pinning today's API
-would be rewritten before catching anything. What *did* earn its keep is running
-code — every real bug found so far (`:A` recursion, exits returning `tell!`'s
-truthy value, the actor listed as scenery, `feature-set?` handed a map) came from
-executing, not reading. So `dev/scratch.clj` is the compromise: a throwaway
-harness that survives the session, with no `lein test` hookup and no maintenance
-obligation. Rewrite it freely.
+**0. ~~Real tests~~ — done (2026-08-19).** Deferred while the engine's shape was
+moving, which was the right call; `dev/scratch.clj` carried the load and has now
+been deleted. `lein test` runs 94 tests / 266 assertions across
+`test/petra/{engine/,}`.
 
-Still outstanding: `test/petra/core_test.clj` holds the generated failing
-`(is (= 0 1))`. Eventually worth pinning a handful of *invariants* that are design
-decisions rather than implementation ("a key appears in at most one parent's
-contains-set" survives every API change contemplated) — about five assertions,
-not a suite.
+The one thing a suite here *must* do is isolate, because engine state lives in
+global atoms and namespaces share them. `petra.support/with-world` is an `:each`
+fixture that wipes back to a bare engine and rebuilds from a `build!` fn before
+every test — and the authoring macros work inside a fn, since `object`/`room`/
+`def-verb`/`def-word` all expand to plain runtime calls, so a test namespace
+declares its world exactly the way a game would.
+
+That isolation is not theoretical: every namespace passed alone while 27 tests
+failed when run together, because `WORDS` and `VERBS` accumulate and two `take`s
+collided. `petra.game-test` needs `with-snapshot` instead, since the shipped
+game's world is built by *requiring* its namespaces rather than by calling a fn.
 
 **1. ~~`goto!`~~ — done (2026-08-18).** Raises `ev-leave`, `move!`s the actor,
 raises `ev-enter`, then `look!`. That order is the reason it's engine and not just
