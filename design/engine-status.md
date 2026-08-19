@@ -56,7 +56,8 @@ to exercise new engine surface.
       game.clj              def-game: the head of the game, pure data
       verbs.clj             its verbs AND its syntax file
       dungeon.clj  handlers.clj
-    dev/                    scratch.clj (harness), demo.clj (playthrough)
+    test/petra/             the suite. support.clj holds the isolation fixtures
+    dev/demo.clj            a scripted playthrough, for reading rather than asserting
 
 Directory `test_game`, namespace `petra.test-game.*` — Clojure munges hyphens to
 underscores in paths, so the two must differ.
@@ -82,6 +83,7 @@ underscores in paths, so the two must differ.
 | Lexicon | `def-word` maps words → verb keywords (synonymy lives here); scope-derived noun/adjective entries carry their candidate objects |
 | Parser | `parse`: lex (longest-match, all candidates) → `derive-all` → read roles → resolve NPs. Pragmatic assertions break ties; `::note` reports what it assumed |
 | Runner | `petra.core/-main` is a read-parse-perform loop. `lein run` plays the test game |
+| Tests | `lein test` — 94 tests / 266 assertions. `petra.support/with-world` rebuilds the world before every test, because engine state is global |
 
 Everything the engine calls out to takes **one** argument: the turn context
 (`verb pre-verb k-dobj k-iobj direction k-actor k-here self objects`).
@@ -300,6 +302,187 @@ Everything the engine calls out to takes **one** argument: the turn context
   the rest of the chain, or you get "You are crushed by the boulder. Taken." So
   flags go to `*turn*` and `die!` throws. ZIL's `JIGS-UP` didn't return either.
 
+## The parser's new structures, and whether they should exist
+
+Everything below is a structure the engine did not have before the parser. The
+method all along has been to ask whether a new thing can be folded into a simpler
+or existing one — RARG became dispatch-by-map, `::because` turned out to restate
+the spec, `desc`/`desc-fn` collapsed to one property — so this is the list to work
+down next.
+
+**Three are suspect.** In order of how much I'd want them changed:
+
+1. `ASSERTIONS` is a registry of which **four of seven entries are plain feature
+   tests**, duplicating vocabulary `features` already owns.
+2. `*known-assertions*` is a cross-namespace back-channel installed by
+   `alter-var-root` — the shape of thing this project deletes.
+3. `WORDS` is a **vector** where every other registry is a map, and gets
+   `group-by`'d on every parse.
+
+The rest I think earn their keep, but the reasoning is written out so it can be
+argued with.
+
+### 1. `ASSERTIONS` — a registry that mostly restates `features`
+
+*What:* `parser/ASSERTIONS`, an atom of keyword → `(fn [candidate actor objects])`,
+seven entries, referenced from a slot as `[N :DO #{:held}]`.
+
+*Why:* pragmatic tie-breaking needed *some* vocabulary for "what the verb expects
+of this argument", and it had to be extensible by games.
+
+*Could it fold back:* **largely yes, and it should.** Count what is actually there:
+
+| assertion | what it does |
+|---|---|
+| `:takeable` `:container` `:surface` `:open` | `(feature-set? k ::f-…)` — nothing else |
+| `:shut` | the negation of one feature test |
+| `:held` `:not-held` | `(ultimately-in? k actor)` and its negation |
+
+So four of seven are *exactly* a feature lookup, and a fifth is a negated one. If
+the notation let a slot name a feature directly — reusing `feature-symbols`, the
+same bare-symbol table `features [lit open]` already uses — then `#{open}` would
+need no registry entry at all, and what remains is **one** relation (`held`) plus a
+way to negate. That is a closed two-item vocabulary instead of an open registry,
+and it stops the same concept being spelled two ways (`::f-open` the feature,
+`:open` the assertion).
+
+The open registry was justified by "a game may add its own", but a game can already
+add its own *features*, and a game-specific relation is rare enough to deserve
+being explicit rather than pre-provisioned.
+
+### 2. `*known-assertions*` — a back-channel between two namespaces
+
+*What:* a dynamic var in `lexicon.clj`, defaulting to `(constantly true)`, which
+`parser.clj` overwrites at load with `alter-var-root`.
+
+*Why:* `make-words` should reject an unknown assertion at declaration time, but the
+registry lives in the parser, and I did not want `lexicon` to depend on the
+resolver.
+
+*Could it fold back:* **yes, and folding item 1 removes it entirely.** With
+assertions reduced to features plus one relation, the vocabulary *is* lexicon-side
+and the check is local. Failing that, the honest fix is simply to move `ASSERTIONS`
+into `lexicon.clj` — frame vocabulary belongs where frames are declared — and let
+the parser read it. Either way the `alter-var-root` goes. As written it is load-order
+dependent and invisible: nothing in `lexicon.clj` says who fills that var.
+
+### 3. `WORDS` — a vector where the other registries are maps
+
+*What:* `lexicon/WORDS`, an atom holding a **vector** of entries. `OBJECTS`,
+`VERBS` and `FRAMES` are all maps keyed by the thing you look up.
+
+*Why:* one lexeme may have several entries — homophones (`put` twice), and one word
+in several categories (`north` as both `DIR` and `V`). A map keyed by lexeme would
+need vector values.
+
+*Could it fold back:* **yes, and this one is a live bug, not a preference.** It
+should be `{lexeme [entries]}`, which is what `lexeme-index` reconstructs with
+`group-by` on *every parse*. The vector form also loses the idempotence the other
+registries have: re-loading a game's syntax file *appends* rather than replaces.
+
+Measured: the test game's lexicon is 67 entries; one `(require … :reload)` makes it
+**134**, with duplicates. Because `readings` is a cartesian product over candidates,
+that takes "put the tin cup in the pail" from **8 readings to 128** — past the
+`max-readings` cap of 64, so the parse gets silently truncated and may not contain
+the right reading at all. `petra.game-test` works around this by wiping first,
+which was the hint I should have followed.
+
+### 4. Slot fields: `:head-lex` and `:asserts`
+
+*What:* a selectional slot grew from `{:cat :role}` to `{:cat :role :head-lex
+:asserts}`. Written positionally-free — role is a keyword, head lexeme a string,
+assertions a set — so `[P :GOAL "in" #{:container}]` needs no ordering rule.
+
+*Why:* `:head-lex` splits two homophonous heads (`put … in` vs `put … on`);
+`:asserts` carries the tie-breaking preference.
+
+*Could it fold back:* `:asserts` should stay a slot field — it is genuinely a
+property of *this argument of this verb*, and it travels to the filler by the same
+`transfer-meta` route as `:role`, so it added no new mechanism, only a new field.
+
+`:head-lex` is worth arguing about. There are now **two** ways to constrain what
+fills a slot: category (`PRED` vs `P`) and lexeme (`[P "in"]`). Both answer "what
+may go here". The lexeme form is a de facto category of one word, and one could ask
+whether `in`/`on` should simply be different categories. My view: no — a category is
+a *class* and would multiply without limit (one per preposition), whereas naming the
+word is exact and reads as the DSL. But the tension is real and should be recorded:
+if a third mechanism ever appears, that is the signal something is wrong.
+
+### 5. `::lx/objects` on a lexical entry — a per-parse index
+
+*What:* every scope-derived noun and adjective entry carries the set of objects it
+could denote, and `np-objects` intersects those sets.
+
+*Why:* it makes resolution an intersection rather than a re-match, and adjective
+narrowing falls out for free.
+
+*Could it fold back:* it could be recomputed at resolution time instead of stored,
+which would remove the field — but the field is not really state: **it is a cache
+built fresh for one parse and discarded**, which is worth saying explicitly since it
+looks like durable data. The one thing to watch is that it makes lexical entries
+heterogeneous: static entries (from `def-word`) never carry it, dynamic ones always
+do. That is a mild wart.
+
+### 6. New categories: `DIR` and `PRED`
+
+*What:* two categories beyond `V N A D P`.
+
+*Why:* `DIR` was already the plan in `design/lexer-parser.txt` (so `go` selects a
+direction rather than eight verbs). `PRED` distinguishes a predicative preposition
+(`the cup ON THE TABLE`) from an argument one (`put it ON THE SHELF`).
+
+*Could it fold back:* no, and `PRED` is the clearest case in the whole parser of a
+new structure being *forced*. In this formalism **category is what selection sees**,
+so two things that must be selected differently must differ in category. The
+alternative — one `P` with an "adjunct?" flag the selector checks — is the same
+thing with more words.
+
+Worth being explicit that this is a formalism-imposed choice and not a claim about
+English: real syntax treats both as PPs and locates the difference in attachment.
+Here attachment *is* category.
+
+### 7. The parse result
+
+*What:* `{:verb :dobj :iobj :direction}` on success, plus `::error` or `::note`.
+
+*Why:* it is what `turn!` takes.
+
+*Could it fold back:* the payload keys deliberately reuse the **turn context's own
+names**, so a parse feeds `turn!` with no translation — that is reuse, not a new
+structure, and it is why `parse` and `perform!` line up. The wart is that payload
+keys are unqualified while `::error`/`::note` are namespaced. Defensible (data vs
+metadata about the parse) but it should be a stated rule rather than an accident.
+
+`::chose`/`::chosen` are internal plumbing that never reach the caller — `::chosen`
+is `dissoc`'d — and exist only to build `::note`. They could disappear if
+`resolve-np` returned the rendered aside directly.
+
+### 8. Two magic numbers
+
+`default-search-limit` (20000 states) and `max-readings` (64 lexical combinations).
+Both are blunt instruments standing in for the thing that is actually missing —
+**scoring over derivations**. Neither is a data structure, but both are the kind of
+constant that quietly becomes load-bearing, so they are listed here to be removed
+rather than tuned.
+
+### What did *not* grow
+
+Evidence the discipline held, and the baseline against which the above should be
+judged:
+
+- **no synonym table** — synonymy is several `def-word` entries naming one keyword
+- **no `MANY` token** — coordination will be one lexical item with a medial head
+- **no separate syntax file** — frames live on lexical entries
+- **no switch-verbs** — two frames assigning the same roles, no `V-SGIVE`
+- **no new properties for takeability or surfaces** — `f-takeable`/`f-surface` reuse
+  `features`, authored as bare symbols like the rest
+- **no new required vocabulary property** — nouns and adjectives are *derived* from
+  the label; `noun`/`adj` only add
+- **no new error channel** — parser failures are rendered strings from `text.clj`,
+  the same frames system everything else prints through
+- **no new turn-scoped state** — a parser failure costs no turn because the runner
+  simply doesn't call `turn!`, not because a flag was added to `*turn*`
+
 ## Next steps, in order
 
 **0. ~~Real tests~~ — done (2026-08-19).** Deferred while the engine's shape was
@@ -440,6 +623,12 @@ the world definitions on load.
 
 ## Open questions and known weak spots
 
+- **The parser's new structures have their own audit** — see that section. Three
+  are flagged for collapsing: `ASSERTIONS` (four of seven entries are plain feature
+  tests), `*known-assertions*` (a cross-namespace `alter-var-root` hook), and
+  `WORDS` being a vector (which makes `:reload` double the lexicon and silently
+  blow the readings cap).
+
 - **Dead vocabulary is nearly gone.** `share`, `noun`, `adj` and `GLOBALS` are all
   live now (`in-scope` reads them; the fixture's `green-door` is `share`d from both
   rooms it joins, which is what finally made `open green door` possible). Still
@@ -471,9 +660,12 @@ the world definitions on load.
 ## Running it
 
 ```
-lein check                  # compile everything
-lein run -m clojure.main <script.clj>
+lein check                              # compile everything; should be silent
+lein test                               # 94 tests / 266 assertions
+lein run                                # play the test game
+lein run <game-namespace>               # play some other game
+lein run -m clojure.main dev/demo.clj   # a scripted playthrough
 ```
 
-There's no playable loop yet — `petra.core/main-loop` prints "Nothing to see
-here." Step 1 changes that.
+`lein run` is playable: it boots the game named in `petra.core/DEFAULT-OPTS`
+(the test game by default) and reads commands until you quit or die.
