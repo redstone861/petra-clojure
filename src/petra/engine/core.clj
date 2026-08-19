@@ -24,6 +24,8 @@
 ;; ::f-container : things can be put inside it, and it can be shut
 ;; ::f-transparent : you can see into it even when it is shut
 ;; ::f-lit : gives off light (of a room: is lit regardless of what is in it)
+;; ::f-takeable : the player can pick it up and carry it (ZIL's TAKEBIT)
+;; ::f-surface : things go ON it rather than IN it (a table, a shelf)
 ;; ::f-no-describe : the describers skip it, because something else mentions it
 ;; ::f-touched : has been moved at least once. set by move!, not by the author;
 ;;               it is what retires an object's `fdesc`.
@@ -124,6 +126,25 @@
            (when (contains? (get m kw-contains-local) k) parent-k))
          objects)))
 
+(defn- words-in [s]
+  (when s (clojure.string/split (clojure.string/lower-case (str s)) #"\s+")))
+
+(defn nouns-of
+  "the nouns that name k: the last word of its label, plus anything `noun` added.
+  Derived rather than declared -- ZIL made SYNONYM mandatory, but `label \"brass
+  lantern\"` already says the noun is \"lantern\"."
+  ([k] (nouns-of k @OBJECTS))
+  ([k objects]
+   (into (set (prop k kw-label-heads objects))
+         (when-let [ws (words-in (o:label k objects))] [(last ws)]))))
+
+(defn adjectives-of
+  "the adjectives that narrow k: every label word but the last, plus `adj`."
+  ([k] (adjectives-of k @OBJECTS))
+  ([k objects]
+   (into (set (prop k kw-label-modifiers objects))
+         (butlast (words-in (o:label k objects))))))
+
 (defn parent-index
   "child key -> the set of every parent whose ::contains-local holds it. one pass
   over the whole containment tree; order doesn't matter."
@@ -212,6 +233,24 @@
    (or (feature-set? k ::f-lit objects)
        (boolean (some #(feature-set? % ::f-lit objects)
                       (visible-descendants k objects))))))
+
+(defn in-scope
+  "every key the actor could refer to right now: the room, everything visibly in it
+  (which includes the actor and so its inventory), the room's `share` list, and
+  GLOBALS. This is the parser's contract -- the engine supplies the candidate set,
+  and the parser matches words against it.
+
+  `share` is ZIL's GLOBAL property: a door is referenceable from both rooms it
+  joins without being held by either."
+  ([] (in-scope @ACTOR @OBJECTS))
+  ([k-actor] (in-scope k-actor @OBJECTS))
+  ([k-actor objects]
+   (let [room (room-of k-actor objects)]
+     (into #{}
+           (concat (when room [room])
+                   (when room (visible-descendants room objects))
+                   (when room (prop room kw-contains-shared objects))
+                   (contents GLOBALS objects))))))
 
 (defn- disj-child [objects parent-k k]
   (update-in objects [parent-k kw-contains-local] disj k))
@@ -444,12 +483,23 @@
 ;; the rest of the chain must not run, or you get "You are crushed by the
 ;; boulder. Taken." so it throws. ZIL's JIGS-UP didn't return either.
 
-(defn die!
-  "end the game, printing `msg` (already-rendered text -- use `say` if the line
-  belongs in petra.engine.text). aborts the turn; `turn!` catches it."
+(defn end-game!
+  "stop play, printing `msg` (already-rendered -- use `say` if the line belongs in
+  petra.engine.text). Aborts the turn; `turn!` catches it. For quitting, winning,
+  or any ending that is not a death."
   [& msg]
   (throw (ex-info "the game is over"
                   {::game-over true
+                   ::death? false
+                   ::message (apply str msg)})))
+
+(defn die!
+  "end the game by killing the actor: prints `msg`, then the ::died frame.
+  aborts the turn; `turn!` catches it."
+  [& msg]
+  (throw (ex-info "the game is over"
+                  {::game-over true
+                   ::death? true
                    ::message (apply str msg)})))
 
 (defn game-over?
@@ -618,7 +668,9 @@
       (when-let [inner (seq (keep #(when-not (feature-set? % ::f-no-describe objects)
                                      (stringify-tell-token :a % objects))
                                   (contents-in-order k objects)))]
-        (say ::text/container-holds
+        (say (if (feature-set? k ::f-surface objects)
+               ::text/surface-holds
+               ::text/container-holds)
              {:container k :items (oxford-join inner) :objects objects})))))
 
 (defn describe-contents
@@ -636,9 +688,9 @@
    (let [objects (:objects ctx)
          ;; the actor is in the room but is not scenery in it. skipping it here
          ;; saves every game from having to mark its own player object no-desc.
-         children (remove #(or (= % (:k-actor ctx))
-                               (feature-set? % ::f-no-describe objects))
-                          (contents-in-order k objects))
+         kids (remove #(= % (:k-actor ctx)) (contents-in-order k objects))
+         hidden? #(feature-set? % ::f-no-describe objects)
+         children (remove hidden? kids)
          answered (map (fn [c] [c (describe-object c ctx)]) children)
          spoken (for [[c line] answered :when line]
                   (string/join " " (remove nil? [line (contents-clause c ctx)])))
@@ -648,7 +700,11 @@
                                  (cons (say ::text/contents-listing
                                             {:items (oxford-join items) :objects objects})
                                        (keep #(contents-clause % ctx) mute))))
-         all (remove nil? (concat spoken [gathered]))]
+         ;; a no-desc object is not announced, because the room's own prose already
+         ;; mentions it -- but things sitting on or in it are separate objects, and
+         ;; going unmentioned would make them vanish.
+         hidden-clauses (keep #(contents-clause % ctx) (filter hidden? kids))
+         all (remove nil? (concat spoken [gathered] hidden-clauses))]
      (when (seq all)
        (string/join " " all)))))
 
@@ -923,7 +979,7 @@
         (if-not (game-over? e)
           (throw e)
           (do (tell! (::message (ex-data e)) :>>)
-              (tell! (say ::text/died) :>>)
+              (when (::death? (ex-data e)) (tell! (say ::text/died) :>>))
               ;; dying is emphatically handling the input
               (assoc (turn-state) :handled? true :over? true)))))))
 
@@ -1077,6 +1133,11 @@
     (second x)
     x))
 
+(defn word-of
+  "a DSL vocabulary item -- \"nail\", 'nail or (quote nail) -- as a lowercase string."
+  [x]
+  (clojure.string/lower-case (name (unwrap-symbol x))))
+
 (def direction-symbols ; dsl names for the directions the engine knows
   {'north kw-north
    'east  kw-east
@@ -1167,6 +1228,8 @@
    'container   ::f-container
    'transparent ::f-transparent
    'lit         ::f-lit
+   'takeable    ::f-takeable
+   'surface     ::f-surface
    'no-desc     ::f-no-describe
    'touched     ::f-touched
    'visited     ::f-visited})
@@ -1202,8 +1265,13 @@
                    'features (fn [fs] {kw-features (features-preproc fs)})
                    ;; the responder: truthy return means "I consumed the input"
                    'handle (fn [f] {kw-handler f})
-                   'noun (fn [heads] {kw-label-heads (apply hash-set heads)})
-                   'adj (fn [mods] {kw-label-modifiers (apply hash-set mods)})
+                   ;; extra nouns/adjectives beyond what the label already implies.
+                   ;; normalised to lowercase strings, since that is what input is.
+                   ;; extra nouns/adjectives beyond what the label already implies.
+                   ;; strings or (quoted) symbols; normalised to lowercase strings,
+                   ;; since that is what player input is.
+                   'noun (fn [heads] {kw-label-heads (set (map word-of heads))})
+                   'adj (fn [mods] {kw-label-modifiers (set (map word-of mods))})
                    'fdesc (fn [x] {kw-description-first x})
                    ;; a string, or a fn of ctx returning a string or nil
                    'desc (fn [x] {kw-description-detailed x})

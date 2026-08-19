@@ -5,7 +5,8 @@
   contract a runner needs. There is deliberately no -main here, no boot call, and
   no reference to petra.core: dependencies point game -> engine only."
   (:require [petra.engine.core :refer [def-game]]
-            [petra.test-game.dungeon :as d]))
+            [petra.test-game.dungeon :as d]
+            [petra.test-game.verbs]))                       ; its verbs and syntax file
 
 (def-game
   title  "A Test Dungeon"

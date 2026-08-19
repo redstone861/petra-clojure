@@ -11,21 +11,22 @@
 
 (object ::rusty-pail
         label "rusty pail"
-        features [container lit]                            ; also the room's light source
+        features [container lit takeable]                            ; also the room's light source
         fdesc "Someone has left a rusty pail upturned beside the door."
         desc h/pail-desc)                                   ; fn: speaks only when open
 
 (object ::three-nails
         label "three nails"
-        noun ['nail] ; todo: add allomorphs (so that we don't have to duplicate the syntax with N "nail")
-        adj ['three] ;TODO adjectives will not work like this
+        noun ["nail" "nails"]                               ; beyond "nails" from the label
+        adj  ["rusty"]
         features [no-article]
         desc "Three nails are driven deep into the wall."    ; string
         handle h/nails-h)
 
 ;; no desc and no fdesc: these fall into the stock "You can see ... here." line
-(object ::tin-cup label "tin cup")
-(object ::wet-rag label "wet rag")
+(object ::tin-cup  label "tin cup"  features [takeable])
+(object ::clay-cup label "clay cup" features [takeable])   ; so "cup" is ambiguous
+(object ::wet-rag label "wet rag" features [takeable])
 
 ;; mentioned by the room's own prose, so the describers must leave it alone
 (object ::alcove
@@ -34,11 +35,11 @@
 
 (object ::unicorn-horn
         label "unicorn horn"
-        features [consonant])                                ; "a unicorn horn", not "an"
+        features [consonant takeable])                                ; "a unicorn horn", not "an"
 
 (object ::hourglass
         label "hourglass"
-        features [vowel])                                    ; "an hourglass" is inferred anyway
+        features [vowel takeable])                                    ; "an hourglass" is inferred anyway
 
 (object ::green-door
         label "Green Door"
@@ -54,7 +55,8 @@
       label "Aqua Room"
       ;; no `vowel` flag needed -- "Aqua Room" is inferred. dark until the pail arrives.
       desc h/wet-room-desc                                  ; fn: varies with contents
-      contains [::rusty-pail ::three-nails ::tin-cup ::wet-rag ::alcove]
+      contains [::rusty-pail ::three-nails ::tin-cup ::clay-cup ::wet-rag ::alcove]
+      share [::green-door]                                  ; a door is referable from both sides
       on {enter        h/announce-arrival
           leave        h/announce-departure
           each-turn    h/drip
@@ -71,10 +73,21 @@
       desc "Moss carpets the floor from wall to wall."
       to [[west ::aqua-room]])
 
+(object ::shelf
+        label "stone shelf"
+        features [surface no-desc])                         ; the room's prose names it
+
+(object ::table
+        label "trestle table"
+        features [surface]
+        desc "A trestle table stands under the shelves.")
+
 (room ::cellar
       label "Cellar"
       features [lit]
-      desc "Stone shelves, every one of them empty."
+      share [::green-door]
+      contains [::shelf ::table]
+      desc "Stone shelves, the lowest of them within reach."
       to [[up ::aqua-room via ::green-door]])
 
 (object ::you

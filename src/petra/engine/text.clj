@@ -24,7 +24,16 @@
   (:refer-clojure :exclude []))
 
 (def FRAMES
-  {;; --- movement --------------------------------------------------------------
+  {;; --- the parser talking to the player -------------------------------------
+   ::unknown-word   "[I don't know the word \"{{word}}\".]"
+   ::not-a-sentence "[I don't understand that sentence.]"
+   ::say-something  "[I beg your pardon?]"
+   ::cant-see       "You can't see any {{thing}} here."
+   ::which-one      "Which do you mean, {{things}}?"
+   ;; printed above the action when the parser had to choose for you
+   ::chose          "({{things}})"
+
+   ;; --- movement --------------------------------------------------------------
    ::cant-go   "You can't go that way."
    ::door-shut "{{The door}} is closed."
 
@@ -44,6 +53,7 @@
 
    ;; printed just after whatever container is holding them
    ::container-holds "It seems that {{the container}} contains {{items}}."
+   ::surface-holds   "Sitting on {{the container}} is {{items}}."
 
    ;; --- how lists of things get punctuated -----------------------------------
    ;; these three build "a", "a and b", "a, b, and c".

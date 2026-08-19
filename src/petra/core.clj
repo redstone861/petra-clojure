@@ -10,7 +10,8 @@
                         folder as a CONFIG var, pure data.
     the RUN's options   how THIS run is set up -- which game to load, where saves
                         go. None of the game's business; it lives here."
-  (:require [petra.engine.core :as engine]))
+  (:require [petra.engine.core :as engine]
+            [petra.engine.parser :as parser]))
 
 (def DEFAULT-OPTS
   {:game     'petra.test-game.game
@@ -18,8 +19,8 @@
 
 (defn load-config
   "require a game namespace and read the CONFIG that `def-game` put there.
-  requiring it is what loads the game's rooms and objects, so this is the whole
-  of the runner's knowledge about any game."
+  requiring it is what loads the game's rooms, objects and verbs, so this is the
+  whole of the runner's knowledge about any game."
   [game-ns]
   (require game-ns)
   (if-let [v (ns-resolve game-ns 'CONFIG)]
@@ -28,13 +29,41 @@
                     {:game-ns game-ns
                      :hint "declare one with petra.engine.core/def-game"}))))
 
+(defn play-turn!
+  "one full cycle: parse, and either report the failure or run the turn. Returns
+  the turn state, or nil if the input never became a command -- a parser failure
+  costs no time, which is 6.2."
+  [input]
+  (let [p (parser/parse input)]
+    (if-let [err (:petra.engine.parser/error p)]
+      (do (engine/tell! err :>>) nil)
+      (do
+        ;; when the parser had to choose a referent, say which -- above the result,
+        ;; so the player can see it was understood before seeing what happened
+        (when-let [note (:petra.engine.parser/note p)]
+          (engine/tell! note :>>))
+        (engine/turn! (:verb p) :dobj (:dobj p) :iobj (:iobj p) :direction (:direction p))))))
+
+(defn main-loop
+  "read, parse, perform, until the game ends or the input does."
+  []
+  (loop []
+    (print "\n> ") (flush)
+    (when-let [line (read-line)]
+      ;; echo only when input isn't a terminal, so piped transcripts read properly
+      (when-not (System/console) (println line))
+      (if (clojure.string/blank? line)
+        (recur)
+        (let [st (play-turn! line)]
+          (cond
+            (:over? st) nil                                 ; died, or quit
+            :else (recur)))))))
+
 (defn -main
   "usage: lein run [game-namespace]"
   [& args]
   (let [opts (cond-> DEFAULT-OPTS
                (seq args) (assoc :game (symbol (first args))))]
     (engine/boot! (load-config (:game opts)))
-    ;; TODO: no parser yet, so there is no input to loop over. engine/turn! takes
-    ;; a verb and returns {:time-passed? :handled? :over?}; the loop is that in a
-    ;; loop, breaking on :over?.
-    (engine/tell! :>> "[no parser yet -- nothing to type at]" :>>)))
+    (main-loop)
+    (println)))

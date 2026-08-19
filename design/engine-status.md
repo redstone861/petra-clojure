@@ -1,6 +1,6 @@
 # Petra — engine status and next steps
 
-*Last updated 2026-08-18.*
+*Last updated 2026-08-19.*
 
 ## What this project is
 
@@ -12,7 +12,7 @@ Petra is a text-adventure engine in Clojure. Two halves:
    `design/Learning_ZIL_Steven_Eric_Meretzky_1995.pdf`.
 
 2. **The parser** (`src/petra/engine/syntactic.clj`) — the actual idea, and the reason
-   this isn't just a ZIL port. Instead of ZIL's flat syntax file
+   this isn't just a ZIL port. **Working as of 2026-08-19.** Instead of ZIL's flat syntax file
    (`<SYNTAX GIVE OBJECT TO OBJECT = V-GIVE>`), verbs carry real **selectional
    frames** on their lexical entries, and parsing is Merge: `entry`/`psel` build
    frames, `mrg` labels a mother from its head, `greedy-sel-merge` returns every
@@ -46,13 +46,15 @@ to exercise new engine surface.
                             project.clj's :main. Knows no game -- it resolves one
                             by namespace at runtime.
     src/petra/engine/       the engine
-      core.clj              objects, containment, describers, dispatch, the turn
+      core.clj              objects, containment, describers, dispatch, the turn, scope
       text.clj              every line of English the engine can print
       macros.clj            the `handler` macro
-      syntactic.clj         the Merge parser
-      parser.clj            stub: will drive syntactic and hand turn! a verb
+      syntactic.clj         Merge: frames, merge search, reading a derivation
+      lexicon.clj           def-word; words -> meanings, static and scope-derived
+      parser.clj            input -> a command turn! can run
     src/petra/test_game/    a test game, not content -- rewrite freely
       game.clj              def-game: the head of the game, pure data
+      verbs.clj             its verbs AND its syntax file
       dungeon.clj  handlers.clj
     dev/                    scratch.clj (harness), demo.clj (playthrough)
 
@@ -76,6 +78,10 @@ underscores in paths, so the two must differ.
 | Turn | `turn!` runs one turn and returns its state; `*turn*`/`record-turn!`/`no-time-passes!` for turn-scoped facts; `die!`/`game-over?` |
 | Exits | `to [[north ::room via ::door]]` compiles to DATA. `resolve-exit` is a pure query; `exit-to` `exit-message` `exit-exists?` `exit-door` `exit-permanent?` `exit-destination` `exit-has-destination?` `exit-handler` `exit-notes` `exit-directions` `direction-to` |
 | Definition | `def-object`/`def-room`, aliased `object`/`room`; property table in `prop-symbols-pre` |
+| Scope | `in-scope` — the room, what's visibly in it, inventory, the room's `share` list, `GLOBALS`. `nouns-of`/`adjectives-of` derive vocabulary from labels |
+| Lexicon | `def-word` maps words → verb keywords (synonymy lives here); scope-derived noun/adjective entries carry their candidate objects |
+| Parser | `parse`: lex (longest-match, all candidates) → `derive-all` → read roles → resolve NPs. Pragmatic assertions break ties; `::note` reports what it assumed |
+| Runner | `petra.core/-main` is a read-parse-perform loop. `lein run` plays the test game |
 
 Everything the engine calls out to takes **one** argument: the turn context
 (`verb pre-verb k-dobj k-iobj direction k-actor k-here self objects`).
@@ -185,6 +191,38 @@ Everything the engine calls out to takes **one** argument: the turn context
   `exit-destination` (declared) are different facts: a shut `if` exit declares a
   destination it will not take you to, and a `with` exit's declared destination is
   a hint for cataloguing that nothing reads at resolution.
+
+- **PRSO/PRSI are queries over a derivation, not parser outputs.** `find-role` on
+  the tree. That is the whole reason the parser is built from selectional frames,
+  and the consequences arrived for free: synonymy is several lexical entries naming
+  one keyword; `pick up` is one lexeme because the lexer matches longest-first, so
+  separable verbs need no movement (`design/lexer-parser.txt`); a bare direction is
+  both a `DIR` and a `V`, handled by ordinary lexical ambiguity with no special case.
+
+- **Category is what selection sees.** Two things that must be selected differently
+  must differ in category — which is why an argument preposition (`P`, what a verb
+  selects) and a predicative one (`PRED`, a reduced relative narrowing a noun) are
+  distinct categories though both are spelled "on". A slot may also name the lexeme
+  that must *head* its filler (`[P "in"]`), which is what makes two homophonous
+  `put`s into genuinely different verbs.
+
+- **Vocabulary is derived, scope is separate from it.** `label "brass lantern"`
+  already says the noun is "lantern" and the adjective "brass"; `noun`/`adj` only
+  *add*. And the lexicon carries **every** object's words while only in-scope
+  objects are candidates — so a word for something elsewhere earns "You can't see
+  any rusty pail here", not "I don't know the word". Scope decides what is
+  referable, not what is pronounceable.
+
+- **Pragmatic assertions are preferences, never constraints.** `[N :DO #{:held}]` on
+  DROP breaks a tie between referents and nothing more: exactly one fits → take it
+  silently; several fit → ask, but only among those; none fit → pick one and let the
+  VERB complain, because the verb owns that error and words it properly. ZIL's
+  FIND/GWIM (9.5) and the HAVE/HELD tokens (9.6), of which the doc admits "no one
+  really understands them except Stu".
+
+- **A `::note` is printed exactly when the parser assumed something the player did
+  not state** — `(the clay cup)` above the result. Not for a doomed guess, which is
+  no help; not when the referent was determined.
 
 - **A verb is a keyword; the registry maps it to behaviour.** That indirection is
   the point: `(= verb ::take)` becomes possible, and many input words can name one
@@ -339,7 +377,7 @@ validation on all seven malformed shapes; `never` takes no destination; `with` m
 omit one. Removed: `exit-in-direction`, `with-to`, `no-exit`, `tell-door-cant-go`,
 and `postprocess-props`/`prop-keys-post` (exits were that hook's only user).
 
-**4. `in-scope`** — *the parser contract.* "Which objects can the player refer to
+**4. ~~`in-scope`~~ — done (2026-08-19).** *Was: the parser contract.* "Which objects can the player refer to
 this turn?" = the room, what's visibly in it, the actor's inventory, the room's
 `share` list, and `GLOBALS`. Then the boundary is clean: **engine supplies scope,
 parser matches `noun`/`adj` against it.**
@@ -367,9 +405,27 @@ one input per turn there are no queued commands to discard, so ZIL's `M-FATAL`
 has no reason to exist here. If chaining ever arrives, it's `record-turn!` with
 one more key and a caller that stops early.
 
-**6. `take`/`drop`, a `PLAYER` object, `f-takeable`.** The first two real verbs,
-which prove verb identity and `in-scope` together. (`dev/demo.clj` fakes both
-today, without any takeability check at all.)
+**6. ~~`take`/`drop`, `f-takeable`~~ — done (2026-08-19).** Thirteen verbs live in
+`src/petra/test_game/verbs.clj`, deliberately the game's own.
+
+**7. What the parser still lacks.** In rough order of what a player notices:
+
+- **no orphaning.** Disambiguation asks "Which do you mean…?" and then discards
+  the answer. The question needs to survive into the next input.
+- **no `it`.** Needs game-scoped state (ZIL's `THIS-IS-IT`), not turn-scoped —
+  the referent persists into the next turn.
+- **no coordination or `all`.** Both are cheap: `and` is one medial-head lexical
+  entry (`[[N] :_ [N]]`, verified), `all` is a noun whose candidate set is the
+  scope — and `all` then composes with the assertions for free, since
+  `#{:takeable :not-held}` is exactly the right filter for TAKE ALL. What is
+  missing is set-valued resolution and verbs that iterate.
+- **no scoring over derivations.** When two whole readings resolve, one is taken
+  arbitrarily and reported. Fine for now (rare), but scoring is the principled
+  answer and would also let the search prune instead of enumerating.
+- **no vocatives.** `VERGER, OPEN THE DOOR` is an optional left dependent with an
+  `:ADDRESSEE` role — one derivation, one turn, no ZIL's two-input hack (10.2).
+- **search is uncapped BFS** with a 20k-state budget and no beam; `max-readings`
+  caps lexical ambiguity at 64 combinations, bluntly.
 
 After that the parser has a stable surface to target: a verb keyword, a scope
 set, and `perform!`.
@@ -382,9 +438,10 @@ the world definitions on load.
 
 ## Open questions and known weak spots
 
-- **Dead vocabulary, waiting on `in-scope`:** `share`, `noun`, `adj`, and the
-  `GLOBALS`/`SHARED`/`INTANGIBLES` root containers have zero readers. (`pre` is
-  live now, on verbs.) `::exits` is compiled but never executed, so the whole exit DSL is
+- **Dead vocabulary is nearly gone.** `share`, `noun`, `adj` and `GLOBALS` are all
+  live now (`in-scope` reads them; the fixture's `green-door` is `share`d from both
+  rooms it joins, which is what finally made `open green door` possible). Still
+  unread: `SHARED` and `INTANGIBLES` as root containers. `::exits` is compiled but never executed, so the whole exit DSL is
   still untested in situ — step 1 fixes that. `ev-enter`/`ev-leave` are declared
   but never raised (`ev-each-turn` now is, by `turn!`).
 

@@ -730,3 +730,230 @@
 (chk "finds a with exit too" ::north (direction-to ::wroom ::d/aqua-room))
 (chk "nil when nothing leads there" nil (direction-to ::d/aqua-room ::d/you))
 (println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
+
+;; ---------------------------------------------------------------------------
+;; the parser
+;; ---------------------------------------------------------------------------
+
+(require 'petra.engine.parser 'petra.engine.lexicon 'petra.engine.syntactic
+         'petra.test-game.verbs)
+(alias 'ps 'petra.engine.parser)
+(alias 'lx 'petra.engine.lexicon)
+(alias 'syn 'petra.engine.syntactic)
+(alias 'v 'petra.test-game.verbs)
+
+(remove! ::d/you) (place! ::d/you ::d/aqua-room) (set-actor! ::d/you)
+(shut! ::d/rusty-pail)
+(defn- P [s] (ps/parse s))
+(defn- err [s] (::ps/error (P s)))
+
+(println "\n=== a sentence becomes a command ===")
+(chk "bare verb" {:verb ::v/look :dobj nil :iobj nil :direction nil} (P "look"))
+(chk "synonym reaches the same verb" ::v/look (:verb (P "l")))
+(chk "verb + object" [::v/take ::d/wet-rag] ((juxt :verb :dobj) (P "take the wet rag")))
+(chk "determiner optional" ::d/wet-rag (:dobj (P "take rag")))
+(chk "adjective narrows" ::d/tin-cup (:dobj (P "take tin cup")))
+(chk "multi-word verb" [::v/examine ::d/wet-rag] ((juxt :verb :dobj) (P "look at rag")))
+(chk "multi-word verb, other spelling" ::v/take (:verb (P "pick up rag")))
+
+(println "\n=== direct and indirect objects, by theta-role ===")
+(let [p (P "put the tin cup in the rusty pail")]
+  (chk "verb" ::v/put-in (:verb p))
+  (chk "direct object"   ::d/tin-cup    (:dobj p))
+  (chk "indirect object" ::d/rusty-pail (:iobj p)))
+(chk "and with every determiner dropped" [::d/tin-cup ::d/rusty-pail]
+     ((juxt :dobj :iobj) (P "put tin cup in pail")))
+
+(println "\n=== directions ===")
+(chk "a bare direction is a sentence" [::v/walk ::north] ((juxt :verb :direction) (P "north")))
+(chk "abbreviated" [::v/walk ::north] ((juxt :verb :direction) (P "n")))
+(chk "or an argument of go" [::v/walk ::north] ((juxt :verb :direction) (P "go north")))
+(chk "other directions too" ::down (:direction (P "go down")))
+
+(println "\n=== failures are sentences the player can read ===")
+(chk "unknown word" "[I don't know the word \"frobnitz\".]" (err "take frobnitz"))
+(chk "not a sentence" "[I don't understand that sentence.]" (err "the the the"))
+(chk "nothing at all" true (some? (err "")))
+;; ::unicorn-horn is defined in the dungeon but placed nowhere
+(chk "in the game but not here" "You can't see any horn here." (err "take horn"))
+(chk "ambiguous" "Which do you mean, the clay cup or the tin cup?" (err "take cup"))
+(chk "an adjective resolves the ambiguity" ::d/clay-cup (:dobj (P "take clay cup")))
+
+(println "\n=== scope decides what is referable, not what is pronounceable ===")
+(chk "the door is in scope via `share`" true
+     (contains? (in-scope ::d/you) ::d/green-door))
+(chk "so it can be named" ::d/green-door (:dobj (P "open green door")))
+(place! (remove! ::d/you) ::d/god-kingdom)
+(chk "out of scope: the word is still known" "You can't see any pail here." (err "take pail"))
+(chk "...not treated as gibberish" false (boolean (re-find #"don't know" (err "take pail"))))
+(place! (remove! ::d/you) ::d/aqua-room)
+
+(println "\n=== the derivation is what carries the roles ===")
+(let [lexicon (lx/lexicon ::d/you @OBJECTS)
+      root (first (syn/derive-all (mapv first (syn/lexer "put the tin cup in the pail" lexicon))))]
+  (chk "one derivation, rooted in V" syn/V (:cat root))
+  (chk "the DO subtree" "the tin cup"
+       (clojure.string/join " " (syn/words-of (syn/find-role root :DO))))
+  (chk "the IO subtree" "the pail"
+       (clojure.string/join " " (syn/words-of (syn/find-role root :IO))))
+  (chk "and the verb is read off the head" ::v/put-in
+       (::lx/verb (syn/head-leaf root))))
+
+(println "\n=== optionality actually works now ===")
+(chk "all three optional slots dropped" 1
+     (count (syn/derive-all (mapv first (syn/lexer "take rag" (lx/lexicon ::d/you @OBJECTS))))))
+
+(println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
+
+(println "\n=== head-to-head selection: two homophonous `put`s ===")
+(remove! ::d/you) (place! ::d/you ::d/aqua-room) (set-actor! ::d/you)
+(open! ::d/rusty-pail)
+(chk "in -> put-in"  ::v/put-in (:verb (P "put the tin cup in the pail")))
+(chk "on -> put-on"  ::v/put-on (:verb (P "put the tin cup on the pail")))
+(chk "the roles fill the same way either way" [::d/tin-cup ::d/rusty-pail]
+     ((juxt :dobj :iobj) (P "put tin cup on pail")))
+(chk "a synonym of only one of them" ::v/put-on (:verb (P "lay tin cup on pail")))
+(chk "...and it refuses the other preposition" true
+     (some? (err "lay tin cup in pail")))
+;; "put" is two lexical items, so every reading has to be tried -- which is what
+;; the parser's `readings` does. Only one of them derives.
+(defn- all-roots [sentence]
+  (let [cands (syn/lexer sentence (lx/lexicon ::d/you @OBJECTS))
+        readings (reduce (fn [acc alts] (for [a acc, c alts] (conj a c))) [[]] cands)]
+    (mapcat syn/derive-all readings)))
+(chk "two readings offered, exactly one derives" 1 (count (all-roots "put tin cup in pail")))
+(chk "same the other way" 1 (count (all-roots "put tin cup on pail")))
+;; :IO is borne by the N inside the PP, so the PP's own head is a separate question
+(defn- pp-head [sentence]
+  (let [root (first (all-roots sentence))]
+    (:lex (syn/head-leaf (first (filter #(= syn/P (:cat %)) (syn/all-sos root)))))))
+(chk "the selected phrase is headed by the required word" "in" (pp-head "put tin cup in pail"))
+(chk "...and by the other one for the other verb" "on" (pp-head "put tin cup on pail"))
+(println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
+
+(println "\n=== pragmatic assertions break ties; they never make errors ===")
+(remove! ::d/you) (place! ::d/you ::d/aqua-room) (set-actor! ::d/you)
+(doseq [k [::d/tin-cup ::d/clay-cup]] (place! k ::d/aqua-room))
+(shut! ::d/rusty-pail)
+
+(chk "both cups on the ground: TAKE is a genuine tie" true
+     (some? (err "take cup")))
+(chk "and the question offers exactly the two of them, with articles"
+     "Which do you mean, the clay cup or the tin cup?" (err "take cup"))
+
+(place! ::d/tin-cup ::d/you)                             ; now holding one of them
+(chk "DROP wants a held thing -> the tin cup, no question" ::d/tin-cup
+     (:dobj (P "drop the cup")))
+(chk "TAKE wants a NOT-held thing -> the clay cup, no question" ::d/clay-cup
+     (:dobj (P "take the cup")))
+(chk "the same phrase, two verbs, two referents" [::d/tin-cup ::d/clay-cup]
+     [(:dobj (P "drop cup")) (:dobj (P "take cup"))])
+
+(place! ::d/tin-cup ::d/aqua-room)                       ; holding neither
+(chk "nothing satisfies :held -> pick one rather than ask" true
+     (some? (:dobj (P "drop the cup"))))
+(chk "...and it is NOT an error: the verb owns that complaint" nil
+     (::ps/error (P "drop the cup")))
+(chk "deterministic, so the same input picks the same thing"
+     (:dobj (P "drop the cup")) (:dobj (P "drop the cup")))
+
+(println "\n=== a lone candidate is never rejected by pragmatics ===")
+(remove! ::d/clay-cup)
+(chk "one cup, not held, but DROP still resolves it" ::d/tin-cup
+     (:dobj (P "drop the cup")))
+(place! ::d/clay-cup ::d/aqua-room)
+
+(println "\n=== the preposition itself asserts what a good complement is ===")
+(chk "`in` prefers containers" #{:container}
+     (:asserts (syn/find-role (first (all-roots "put tin cup in pail")) :IO)))
+(chk "`on` prefers surfaces" #{:surface}
+     (:asserts (syn/find-role (first (all-roots "put tin cup on pail")) :IO)))
+(chk "assertions ride to the filler like roles do" #{:held}
+     (:asserts (syn/find-role (first (all-roots "put tin cup in pail")) :DO)))
+
+(println "\n=== unknown assertions are refused at declaration ===")
+(chk "loud" "unknown pragmatic assertion"
+     (first (why #(lx/make-words ["frob"] syn/V [:_ [syn/N :DO #{:wibble}]] {}))))
+(chk "and the registry is inspectable" true
+     (contains? (ps/assertion-names) :held))
+
+(println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
+
+(println "\n=== PP attachment: adjoined to a DP vs argument of the VP ===")
+(remove! ::d/you) (place! ::d/you ::d/cellar) (set-actor! ::d/you)
+(place! ::d/table ::d/cellar)
+(place! ::d/tin-cup ::d/table)
+(place! ::d/clay-cup ::d/shelf)
+
+(chk "TAKE has no P slot, so the PP must adjoin to the noun" ::d/tin-cup
+     (:dobj (P "take the cup on the table")))
+(chk "and it disambiguated two cups by where they are" ::d/clay-cup
+     (:dobj (P "take the cup on the shelf")))
+(chk "PUT-ON needs a P, so a lone PP is its argument" [::d/tin-cup ::d/shelf]
+     ((juxt :dobj :iobj) (P "put the tin cup on the shelf")))
+
+(println "\n=== both at once, in one sentence ===")
+(let [p (P "put the cup on the table on the shelf")]
+  (chk "the first PP narrowed the object" ::d/tin-cup (:dobj p))
+  (chk "the second PP is the verb's goal" ::d/shelf (:iobj p)))
+(chk "two derivations were on offer" 2 (count (all-roots "put the cup on the table on the shelf")))
+
+(println "\n=== which attachment wins is decided by the world, not by a rule ===")
+(place! ::d/table ::d/shelf)                             ; now there IS a table on the shelf
+(place! ::d/tin-cup ::d/cellar)                          ; and nothing on the table
+(let [p (P "put the cup on the table on the shelf")]
+  (chk "same sentence, the OTHER attachment" ::d/table (:iobj p))
+  (chk "...so the object is a bare cup" true (contains? #{::d/tin-cup ::d/clay-cup} (:dobj p))))
+(place! ::d/table ::d/cellar) (place! ::d/tin-cup ::d/table)
+
+(println "\n=== a modifier is not one of the noun's own words ===")
+(chk "the walk stops at PRED, or {cups} n {tables} would be empty" #{::d/tin-cup}
+     (let [np (syn/find-role (first (all-roots "take the cup on the table")) :DO)]
+       (set (keep ::lx/objects (syn/leaves-above np #{syn/PRED})))
+       (set [(:dobj (P "take the cup on the table"))])))
+(chk "predicative `on` is a different category from argument `on`" true
+     (not= syn/P syn/PRED))
+(chk "a nonexistent location is a can't-see, not a wrong parse" true
+     (boolean (re-find #"can't see" (err "take the cup on the pail"))))
+
+(println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))
+
+(println "\n=== the parser says which thing it settled on ===")
+(remove! ::d/you) (place! ::d/you ::d/aqua-room) (set-actor! ::d/you)
+(doseq [k [::d/tin-cup ::d/clay-cup ::d/wet-rag]] (place! k ::d/aqua-room))
+(place! ::d/table ::d/cellar)
+
+(chk "nothing in doubt -> no note" nil (::ps/note (P "take the wet rag")))
+(chk "nothing in doubt, even with an adjective" nil (::ps/note (P "take the tin cup")))
+
+(place! ::d/tin-cup ::d/you)                             ; holding one of the two cups
+(chk "a tie broken by pragmatics is reported" "(the clay cup)"
+     (::ps/note (P "take the cup")))
+(chk "and the object really is the reported one" ::d/clay-cup (:dobj (P "take the cup")))
+(chk "the other verb reports the other one" "(the tin cup)"
+     (::ps/note (P "drop the cup")))
+
+(place! ::d/tin-cup ::d/aqua-room)                       ; holding neither
+(chk "a doomed guess is NOT reported -- it is no help to anyone" nil
+     (::ps/note (P "drop the cup")))
+(chk "...but it still resolves, so the verb gets to complain" true
+     (some? (:dobj (P "drop the cup"))))
+
+(chk "an unbroken tie asks instead of noting" [nil true]
+     (do (doseq [k [::d/tin-cup ::d/clay-cup]] (place! k ::d/you))
+         [(::ps/note (P "drop the cup")) (some? (err "drop the cup"))]))
+(doseq [k [::d/tin-cup ::d/clay-cup]] (place! k ::d/aqua-room))
+
+(println "\n=== a structural tie is reported too, more coarsely ===")
+(place! ::d/you ::d/cellar)
+(place! ::d/table ::d/shelf) (place! ::d/tin-cup ::d/table) (place! ::d/clay-cup ::d/cellar)
+(let [p (P "put the cup on the table on the shelf")]
+  (chk "two whole readings resolved, so it names the one thing it settled on" true
+       (some? (::ps/note p)))
+  (chk "and the note is a single name, like any other assumption" true
+       (boolean (re-find #"^\(the [a-z ]+\)$" (::ps/note p)))))
+(place! ::d/table ::d/cellar) (place! ::d/tin-cup ::d/table)
+(chk "only one reading resolves -> no structural note" nil
+     (::ps/note (P "put the cup on the table on the shelf")))
+
+(println (if (zero? @fails) "\nALL PASS" (str "\n" @fails " FAILURE(S)")))

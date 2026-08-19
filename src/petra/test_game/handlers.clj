@@ -1,27 +1,19 @@
 (ns petra.test-game.handlers
   (:require [petra.engine.core :as engine]
-            [petra.engine.macros :refer [handler]]))
+            [petra.engine.macros :refer [handler]]
+            [petra.test-game.verbs :as v]))
 
-;; test fixtures for the engine's three call-out contracts. none of these
-;; reference world keys -- they work off `self` and `objects`, which is what
-;; makes a fn like this reusable across many objects. (ZIL action routines
-;; hardcoded their own identity, as in AVOCADO-F's <REMOVE ,AVOCADO>, so they
-;; could not be shared.)
-
-;; --- responders: truthy = I consumed the input -------------------------------
-;; TODO: verbs do not exist yet, so there is nothing to dispatch `verb` against.
-;; once there are verb defaults this becomes a cond over verb identity, the way a
-;; ZIL action routine is a COND over <VERB? ...>.
+;; an action routine returns truthy when it has handled the input, and nil/false
+;; to let the input fall through to the next handler in perform!'s chain. see
+;; petra.engine.macros/handler for everything the body has in scope.
 
 (handler nails-h
+  ;; verbs are keywords now, so a responder can be specific instead of catching
+  ;; everything aimed at it. This is a COND over verb identity -- ZIL's <VERB? ...>.
   (cond
-    ;; ZIL distinguished these by comparing the PRSO/PRSI globals; here the same
-    ;; question is asked of the context, and needs no tag either way.
-    (= self k-iobj) (engine/tell! "You can't use the nails for that." :>>)
-    (= self k-dobj) (engine/tell! "The nails are rusted into place." :>>)
+    (= verb ::v/take)    (engine/tell! "The nails are rusted into place." :>>)
+    (= verb ::v/examine) (engine/tell! "Three square-cut nails, thick with rust." :>>)
     :else nil))
-
-;; --- describers: a string, or nil to decline ---------------------------------
 
 (handler wet-room-desc
   (str "Water sheets down every wall of this cramped chamber."
@@ -29,13 +21,8 @@
          " Something has been left on the floor.")))
 
 (handler pail-desc
-  ;; returning nil is the whole of ZIL's M-OBJDESC? query: no second call needed
-  ;; to ask whether this object intends to describe itself. when this declines,
-  ;; the describers fold the pail into the stock "You can see ..." line instead.
   (when (engine/open? self)
     "A rusty pail lies on its side, lid off."))
-
-;; --- notifications: return value is discarded --------------------------------
 
 (handler announce-arrival
   (engine/tell! "A cold wind cuts through you as you enter " :the self "." :>>))
