@@ -393,13 +393,27 @@ assertions a set — so `[P :GOAL "in" #{:container}]` needs no ordering rule.
 property of *this argument of this verb*, and it travels to the filler by the same
 `transfer-meta` route as `:role`, so it added no new mechanism, only a new field.
 
-`:head-lex` is worth arguing about. There are now **two** ways to constrain what
-fills a slot: category (`PRED` vs `P`) and lexeme (`[P "in"]`). Both answer "what
-may go here". The lexeme form is a de facto category of one word, and one could ask
-whether `in`/`on` should simply be different categories. My view: no — a category is
-a *class* and would multiply without limit (one per preposition), whereas naming the
-word is exact and reads as the DSL. But the tension is real and should be recorded:
-if a third mechanism ever appears, that is the signal something is wrong.
+`:head-lex` gives a **second** way to constrain what fills a slot, alongside
+category (`PRED` vs `P`). Both answer "what may go here", and the lexeme form is a
+de facto category of one word — so the usual collapse question applies: should
+`in`/`on` simply be different categories?
+
+**Leave both. Sam's call (2026-08-19), and the reason is the interesting part:**
+whether selection is stated over categories or over particular lexical items is an
+open question in minimalist syntax, not a settled one this engine gets to inherit.
+So the two mechanisms are not a duplication awaiting a merge; they are the engine
+declining to take a side the theory has not taken.
+
+That matters for the audit's method. Everywhere else in this document, two ways of
+saying one thing is a defect — RARG's tag restated the property table, `::because`
+restated the spec, four assertions restated `features`. Here it isn't, and the
+distinction is *why*: those were the same claim encoded twice, whereas c-selection
+by class and by item are rival accounts of the same phenomenon. Collapsing them
+would be picking a winner, which is the one thing a faithful implementation of a
+contested formalism should not do by accident.
+
+So: no smell, no third-mechanism tripwire, nothing to fix. If it ever *does* want
+resolving, that will be because the linguistics resolved it.
 
 ### 5. `::lx/objects` on a lexical entry — a per-parse index
 
