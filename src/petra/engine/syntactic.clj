@@ -128,11 +128,17 @@
 )
 
 
-(defn- lexeme-index
-  "lexeme string -> vector of entries, and the longest lexeme in words."
-  [lx]
-  [(group-by :lex lx)
-   (reduce max 1 (map #(count (clojure.string/split (:lex %) #"\s+")) lx))])
+(defn as-index
+  "a lexicon as {lexeme [entries]}. Accepts one already in that shape -- which is
+  what petra.engine.lexicon builds -- or a bare seq of entries, for tests and the
+  repl."
+  [lexicon]
+  (if (map? lexicon) lexicon (group-by :lex lexicon)))
+
+(defn- longest-lexeme
+  "the most words in any single lexeme, which is how far pre-lexer looks ahead."
+  [index]
+  (reduce max 1 (map #(count (clojure.string/split % #"\s+")) (keys index))))
 
 (defn pre-lexer
   "split input into lexemes, matching the LONGEST multi-word entry at each point.
@@ -140,7 +146,8 @@
   seam -- which is also how design/lexer-parser.txt resolves separable verbs
   without modelling movement."
   [str-in lexicon]
-  (let [[index longest] (lexeme-index lexicon)
+  (let [index (as-index lexicon)
+        longest (longest-lexeme index)
         words (clojure.string/split (clojure.string/lower-case (clojure.string/trim str-in)) #"\s+")]
     (loop [ws words, out []]
       (if (empty? ws)
@@ -154,9 +161,9 @@
 (defn lexer
   "input -> a vector of CANDIDATE vectors, one per lexeme. A lexeme with no entry
   yields an empty vector, which is how the caller reports an unknown word."
-  [str-in lx]
-  (let [[index _] (lexeme-index lx)]
-    (mapv (fn [w] (vec (get index w []))) (pre-lexer str-in lx))))
+  [str-in lexicon]
+  (let [index (as-index lexicon)]
+    (mapv (fn [w] (vec (get index w []))) (pre-lexer str-in index))))
 
 (defn atomic? 
   "returns true if the so is atomic (a lexical item)."

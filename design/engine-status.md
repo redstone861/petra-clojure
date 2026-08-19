@@ -310,82 +310,75 @@ or existing one — RARG became dispatch-by-map, `::because` turned out to resta
 the spec, `desc`/`desc-fn` collapsed to one property — so this is the list to work
 down next.
 
-**Three are suspect.** In order of how much I'd want them changed:
+**Three were suspect; all three are now folded (2026-08-19).** Items 1–3 below
+record what they were and what replaced them, since the reasoning is the useful
+part. Items 4–8 earn their keep, and the argument is written out so it can be
+disputed.
 
-1. `ASSERTIONS` is a registry of which **four of seven entries are plain feature
-   tests**, duplicating vocabulary `features` already owns.
-2. `*known-assertions*` is a cross-namespace back-channel installed by
-   `alter-var-root` — the shape of thing this project deletes.
-3. `WORDS` is a **vector** where every other registry is a map, and gets
-   `group-by`'d on every parse.
+### 1. ~~`ASSERTIONS`~~ — folded into features plus one relation
 
-The rest I think earn their keep, but the reasoning is written out so it can be
-argued with.
+*Was:* `parser/ASSERTIONS`, an atom of seven keyword → predicate entries.
 
-### 1. `ASSERTIONS` — a registry that mostly restates `features`
+*The problem:* four of the seven were *exactly* `(feature-set? k ::f-…)` and a fifth
+was a negated one. Only `held` was a real relation. The same concept was spelled two
+ways — `::f-open` the feature, `:open` the assertion.
 
-*What:* `parser/ASSERTIONS`, an atom of keyword → `(fn [candidate actor objects])`,
-seven entries, referenced from a slot as `[N :DO #{:held}]`.
+*Now:* `engine.core/assertion-pred` resolves an assertion name in this order —
 
-*Why:* pragmatic tie-breaking needed *some* vocabulary for "what the verb expects
-of this argument", and it had to be extensible by games.
+1. a **registered relation**, of which there is now exactly **one**: `held`
+2. a name in **`feature-symbols`**, the same table `features [lit open]` uses
+3. a **qualified keyword**, taken to be a game's own feature and tested as-is
 
-*Could it fold back:* **largely yes, and it should.** Count what is actually there:
+with a `not-` prefix negating whatever it resolves to. So `:takeable`,
+`:container`, `:surface` and `:open` need no registry entry, `:shut` disappeared
+entirely in favour of `:not-open`, and `:not-held` is the one relation negated.
+`assertion-relations` holds a single fn.
 
-| assertion | what it does |
-|---|---|
-| `:takeable` `:container` `:surface` `:open` | `(feature-set? k ::f-…)` — nothing else |
-| `:shut` | the negation of one feature test |
-| `:held` `:not-held` | `(ultimately-in? k actor)` and its negation |
+Games still extend it two ways, and neither needs pre-provisioning: `def-assertion!`
+registers a relation (negation comes free), and a game's own feature keyword works
+as an assertion with no registration at all.
 
-So four of seven are *exactly* a feature lookup, and a fifth is a negated one. If
-the notation let a slot name a feature directly — reusing `feature-symbols`, the
-same bare-symbol table `features [lit open]` already uses — then `#{open}` would
-need no registry entry at all, and what remains is **one** relation (`held`) plus a
-way to negate. That is a closed two-item vocabulary instead of an open registry,
-and it stops the same concept being spelled two ways (`::f-open` the feature,
-`:open` the assertion).
+*One thing worth knowing:* assertions are **keywords**, not the bare symbols
+`features [lit open]` uses, and the asymmetry is real. A frame is *evaluated* —
+that is what makes `N` and `P` resolve to their categories — whereas a property's
+value reaches the DSL unevaluated as macro data. A bare symbol inside a frame simply
+fails to resolve. `assertion-pred` therefore looks features up by *name*, so
+`:takeable` finds the `takeable` entry.
 
-The open registry was justified by "a game may add its own", but a game can already
-add its own *features*, and a game-specific relation is rare enough to deserve
-being explicit rather than pre-provisioned.
+### 2. ~~`*known-assertions*`~~ — deleted
 
-### 2. `*known-assertions*` — a back-channel between two namespaces
+*Was:* a dynamic var in `lexicon.clj` that `parser.clj` overwrote with
+`alter-var-root`, because `make-words` had to reject an unknown assertion at
+declaration time while the registry lived in the parser. Load-order dependent, and
+invisible — nothing in `lexicon.clj` said who filled it.
 
-*What:* a dynamic var in `lexicon.clj`, defaulting to `(constantly true)`, which
-`parser.clj` overwrites at load with `alter-var-root`.
+*Now:* the vocabulary lives in `engine.core`, next to `feature-symbols`, because
+*both* the lexicon (which validates a slot as it is declared) and the parser (which
+evaluates it) need it, and both already depend on core. `make-words` calls
+`e/assertion-pred` directly and throws with the list of known names. No hook.
 
-*Why:* `make-words` should reject an unknown assertion at declaration time, but the
-registry lives in the parser, and I did not want `lexicon` to depend on the
-resolver.
+### 3. ~~`WORDS` as a vector~~ — now a map, and idempotent
 
-*Could it fold back:* **yes, and folding item 1 removes it entirely.** With
-assertions reduced to features plus one relation, the vocabulary *is* lexicon-side
-and the check is local. Failing that, the honest fix is simply to move `ASSERTIONS`
-into `lexicon.clj` — frame vocabulary belongs where frames are declared — and let
-the parser read it. Either way the `alter-var-root` goes. As written it is load-order
-dependent and invisible: nothing in `lexicon.clj` says who fills that var.
+*Was:* an atom holding a **vector** of entries, where `OBJECTS`, `VERBS` and
+`FRAMES` are all maps keyed by what you look up. It was rebuilt into an index with
+`group-by` on every parse, and — the actual bug — declaring was not idempotent, so
+re-loading a game's syntax file *appended*.
 
-### 3. `WORDS` — a vector where the other registries are maps
+Measured before: 67 entries → one `:reload` → **134** with duplicates → "put the tin
+cup in the pail" from **8 readings to 128**, past the `max-readings` cap of 64, so
+the parse was silently truncated and might not contain the right reading. (That
+`petra.game-test` had to wipe the lexicon first was the hint I should have followed.)
 
-*What:* `lexicon/WORDS`, an atom holding a **vector** of entries. `OBJECTS`,
-`VERBS` and `FRAMES` are all maps keyed by the thing you look up.
+*Now:* `{lexeme [entries]}`, so it *is* the index, and `make-words` keeps entries
+distinct — re-declaring a word is a no-op. Measured after: **48 lexemes before and
+after a `:reload`**, readings unchanged at 8. `lexicon` returns the same shape, and
+`syntactic/as-index` still accepts a bare seq of entries so tests and the repl can
+hand over a list.
 
-*Why:* one lexeme may have several entries — homophones (`put` twice), and one word
-in several categories (`north` as both `DIR` and `V`). A map keyed by lexeme would
-need vector values.
-
-*Could it fold back:* **yes, and this one is a live bug, not a preference.** It
-should be `{lexeme [entries]}`, which is what `lexeme-index` reconstructs with
-`group-by` on *every parse*. The vector form also loses the idempotence the other
-registries have: re-loading a game's syntax file *appends* rather than replaces.
-
-Measured: the test game's lexicon is 67 entries; one `(require … :reload)` makes it
-**134**, with duplicates. Because `readings` is a cartesian product over candidates,
-that takes "put the tin cup in the pail" from **8 readings to 128** — past the
-`max-readings` cap of 64, so the parse gets silently truncated and may not contain
-the right reading at all. `petra.game-test` works around this by wiping first,
-which was the hint I should have followed.
+A lexeme legitimately holds several entries — `put` twice (head-to-head selection),
+`in` as both an argument and a predicative preposition, `north` as both a direction
+and a sentence — and that is now visible in the structure rather than implied by
+duplicates in a list.
 
 ### 4. Slot fields: `:head-lex` and `:asserts`
 

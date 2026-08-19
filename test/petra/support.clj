@@ -21,7 +21,7 @@
   "the atoms holding engine state. Note these are the atoms themselves, not vars:
   deref on a var yields the atom rather than its value, which is a good way to
   reset an atom to an atom and spend a while wondering why every label is nil."
-  [e/OBJECTS e/ACTOR e/VERBS e/FRAMES e/VERBOSITY lx/WORDS ps/ASSERTIONS])
+  [e/OBJECTS e/ACTOR e/VERBS e/FRAMES e/VERBOSITY lx/WORDS e/assertion-relations])
 
 (defn snapshot [] (mapv deref guarded))
 (defn install! [snap] (dorun (map reset! guarded snap)))
@@ -32,7 +32,7 @@
   lexicon accumulates across the whole suite and two `take`s collide."
   []
   (install! [{e/ROOMS {} e/SHARED {} e/GLOBALS {} e/INTANGIBLES {}}
-             nil {} text/FRAMES e/v-brief [] @ps/ASSERTIONS]))
+             nil {} text/FRAMES e/v-brief {} @e/assertion-relations]))
 
 (defn isolate
   "a clojure.test :each fixture. Snapshots every engine atom, runs the test, and

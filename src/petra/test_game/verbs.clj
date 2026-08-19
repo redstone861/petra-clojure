@@ -135,7 +135,7 @@
 ;; tie between referents and nothing more -- see petra.engine.parser.
 (def-word ["take" "get" "pick up"]        V [:_ [N :DO #{:takeable :not-held}]] verb ::take)
 (def-word ["drop" "put down"]             V [:_ [N :DO #{:held}]]  verb ::drop)
-(def-word ["open"]                        V [:_ [N :DO #{:shut}]]  verb ::open)
+(def-word ["open"]                        V [:_ [N :DO #{:not-open}]]  verb ::open)
 (def-word ["close" "shut"]                V [:_ [N :DO #{:open}]]  verb ::close)
 ;; Head-to-head selection: two homophonous V heads, told apart by which
 ;; preposition heads the phrase they select. "put ... in" and "put ... on" are

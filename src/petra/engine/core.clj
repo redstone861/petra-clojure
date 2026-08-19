@@ -1242,6 +1242,81 @@
   (into #{}
         (map (fn [f] (let [s (unwrap-symbol f)] (get feature-symbols s s))) fs)))
 
+;; ---------------------------------------------------------------------------
+;; pragmatic assertions
+;; ---------------------------------------------------------------------------
+;; What a verb expects of an argument, written on a frame slot as
+;; `[N :DO #{held}]`. Used to break a tie between candidate referents -- never as
+;; a constraint. See petra.engine.parser for the rule.
+;;
+;; MOST assertions are not their own vocabulary at all: `open`, `container`,
+;; `takeable` and the rest name FEATURES, so they resolve through the same
+;; `feature-symbols` table `features [lit open]` already uses. Prefixing `not-`
+;; negates. That leaves only the genuinely relational ones needing a registry, and
+;; at present there is exactly one of those.
+;;
+;; It lives here, next to feature-symbols, because both the lexicon (which
+;; validates a slot when it is declared) and the parser (which evaluates it) need
+;; it, and both already depend on this namespace.
+
+(def assertion-relations
+  "assertion name -> (fn [candidate k-actor objects]), for the assertions that are
+  NOT feature tests. There is exactly one, which is the point: everything else in
+  the old registry turned out to be a feature lookup. A game may add its own with
+  `def-assertion!`."
+  (atom {'held (fn [k k-actor objects] (ultimately-in? k k-actor objects))}))
+
+(defn def-assertion!
+  "register a game's own relational assertion. `pred` takes [candidate actor
+  objects]. Prefixing the name with `not-` at the use site negates it, so only the
+  positive form needs registering."
+  [name pred]
+  (swap! assertion-relations assoc name pred))
+
+(defn- strip-not
+  "[negated? base-name]"
+  [a]
+  (let [s (name a)]
+    (if (string/starts-with? s "not-")
+      [true (if (keyword? a) (keyword (namespace a) (subs s 4)) (symbol (subs s 4)))]
+      [false a])))
+
+(defn assertion-pred
+  "resolve an assertion name to a predicate of [candidate k-actor objects], or nil
+  if the name means nothing.
+
+    :held         a registered relation
+    :not-held     ...negated
+    :open         the `open` feature is set -- i.e. ::f-open
+    :not-open     ...is not
+    ::mine/glow   a game's own feature keyword, tested as-is
+
+  Written as KEYWORDS rather than the bare symbols `features [lit open]` uses,
+  because a frame is *evaluated* -- that is what makes `N` and `P` resolve to their
+  categories -- whereas a property's value reaches the DSL unevaluated. A bare
+  symbol in a frame would simply fail to resolve.
+
+  A registered relation wins over a feature of the same name, so a game may
+  override one. An unqualified keyword is looked up in `feature-symbols` by name; a
+  qualified one is taken to be a game's own feature keyword and tested directly,
+  which is how `features` already treats an unrecognised keyword."
+  [a]
+  (let [a (unwrap-symbol a)
+        [negated? base] (strip-not a)
+        as-feature (fn [feat] (fn [k _ objects] (feature-set? k feat objects)))
+        f (or (get @assertion-relations base)
+              (get @assertion-relations (symbol (name base)))
+              (when-let [feat (get feature-symbols (symbol (name base)))]
+                (as-feature feat))
+              (when (and (keyword? base) (namespace base)) (as-feature base)))]
+    (when f (if negated? (complement f) f))))
+
+(defn assertion-names
+  "every assertion name that resolves without a `not-` prefix, as keywords."
+  []
+  (into #{} (map (comp keyword name))
+        (concat (keys @assertion-relations) (keys feature-symbols))))
+
 (def event-symbols ; dsl names for the events the engine raises
   {'enter ev-enter
    'leave ev-leave

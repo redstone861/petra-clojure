@@ -37,7 +37,7 @@
   (def-word ["look at" "examine" "x"] V [:_ [N :DO]]                        verb ::examine)
   (def-word ["take" "get" "pick up"]  V [:_ [N :DO #{:takeable :not-held}]] verb ::take)
   (def-word ["drop"]                  V [:_ [N :DO #{:held}]]               verb ::drop)
-  (def-word ["open"]                  V [:_ [N :DO #{:shut}]]               verb ::open)
+  (def-word ["open"]                  V [:_ [N :DO #{:not-open}]]               verb ::open)
   (def-word ["put" "insert"]          V [:_ [N :DO #{:held}] [P "in"]]      verb ::put-in)
   (def-word ["put" "set" "lay"]       V [:_ [N :DO #{:held}] [P "on"]]      verb ::put-on)
   (def-word ["go" "walk"]             V [:_ [DIR :DIR]]                     verb ::walk)
@@ -229,4 +229,74 @@
 (deftest unknown-assertions-are-refused-at-declaration
   (is (t/throws-info? #"unknown pragmatic assertion"
                       #(lx/make-words ["frob"] V [:_ [N :DO #{:wibble}]] {})))
-  (is (contains? (ps/assertion-names) :held)))
+  (is (contains? (e/assertion-names) :held) "the one relational assertion")
+  (is (contains? (e/assertion-names) :open) "and every feature is one for free"))
+
+;; --- the assertion vocabulary ---------------------------------------------
+
+(deftest most-assertions-are-just-features
+  (setup!)
+  (testing "a feature name, resolved through the same table `features` uses"
+    (is ((e/assertion-pred :takeable) ::tin-cup ::you @e/OBJECTS))
+    (is (not ((e/assertion-pred :takeable) ::shelf ::you @e/OBJECTS)))
+    (is ((e/assertion-pred :surface) ::shelf ::you @e/OBJECTS)))
+  (testing "`not-` negates, so `shut` needs no name of its own"
+    (is ((e/assertion-pred :not-open) ::pail ::you @e/OBJECTS))
+    (e/open! ::pail)
+    (is (not ((e/assertion-pred :not-open) ::pail ::you @e/OBJECTS)))
+    (is ((e/assertion-pred :open) ::pail ::you @e/OBJECTS))))
+
+(deftest only-genuine-relations-need-registering
+  (setup!)
+  (is (= '#{held} (set (keys @e/assertion-relations)))
+      "one entry; everything else folded into features")
+  (is (not ((e/assertion-pred :held) ::tin-cup ::you @e/OBJECTS)))
+  (e/place! ::tin-cup ::you)
+  (is ((e/assertion-pred :held) ::tin-cup ::you @e/OBJECTS))
+  (is (not ((e/assertion-pred :not-held) ::tin-cup ::you @e/OBJECTS))))
+
+(deftest a-game-may-register-its-own
+  (setup!)
+  (e/def-assertion! 'shiny (fn [k _ objects] (= ::tin-cup k)))
+  (is ((e/assertion-pred :shiny) ::tin-cup ::you @e/OBJECTS))
+  (is (not ((e/assertion-pred :shiny) ::rag ::you @e/OBJECTS)))
+  (is ((e/assertion-pred :not-shiny) ::rag ::you @e/OBJECTS) "negation for free")
+  (is (contains? (e/assertion-names) :shiny)))
+
+(deftest a-games-own-feature-keyword-works-too
+  (setup!)
+  (e/set-feature ::rag :petra.engine.parser-test/soggy)
+  (is ((e/assertion-pred ::soggy) ::rag ::you @e/OBJECTS)
+      "a qualified keyword is taken as a feature and tested as-is")
+  (is (not ((e/assertion-pred ::soggy) ::tin-cup ::you @e/OBJECTS))))
+
+(deftest nonsense-is-refused-when-the-word-is-declared
+  (is (nil? (e/assertion-pred :wibble)))
+  (is (t/throws-info? #"unknown pragmatic assertion"
+                      #(lx/make-words ["frob"] V [:_ [N :DO #{:wibble}]] {}))))
+
+;; --- the lexicon is a proper registry -------------------------------------
+
+(deftest declaring-a-word-is-idempotent
+  (setup!)
+  (let [before @lx/WORDS]
+    (def-word ["take" "get" "pick up"] V [:_ [N :DO #{:takeable :not-held}]] verb ::take)
+    (is (= before @lx/WORDS) "re-declaring the same word changes nothing"))
+  (testing "which is why a :reload no longer doubles the lexicon"
+    (is (= 1 (count (get @lx/WORDS "take"))))))
+
+(deftest a-lexeme-may-hold-several-entries
+  (setup!)
+  (is (= 2 (count (get @lx/WORDS "put"))) "two homophonous verbs")
+  (is (= 2 (count (get @lx/WORDS "in")))  "an argument P and a predicative one")
+  (is (= 2 (count (get @lx/WORDS "north"))) "a direction, and a sentence"))
+
+(deftest the-lexicon-is-an-index-and-the-lexer-takes-one
+  (setup!)
+  (let [lex (lx/lexicon ::you @e/OBJECTS)]
+    (is (map? lex))
+    (is (contains? lex "tin") "scope-derived adjectives are in it")
+    (is (= 4 (count (syn/lexer "take the tin cup" lex))))
+    (testing "and a bare seq of entries still works, for tests and the repl"
+      (is (= [[:D]] (mapv #(mapv :cat %)
+                          (syn/lexer "the" [(syn/entry "the" D [:_])])))))))

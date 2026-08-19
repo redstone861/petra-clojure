@@ -21,26 +21,39 @@
 ;; static words
 ;; ---------------------------------------------------------------------------
 
-(def WORDS (atom []))
+(def WORDS
+  "lexeme -> vector of entries, keyed like every other registry. A lexeme has
+  several entries when it is homophonous (`put` twice) or belongs to more than one
+  category (`north` as both a DIR and a sentence).
+
+  Declaring is IDEMPOTENT: an identical entry replaces rather than appends. As a
+  flat vector this was a live bug -- re-loading a game's syntax file doubled the
+  lexicon, and since readings are a cartesian product over candidates that
+  multiplied the search until it blew past the readings cap."
+  (atom {}))
 
 (def word-symbols
   {'verb      ::verb                                        ; the verb keyword this word names
    'direction ::direction})                                 ; the direction it names
 
-(def ^:dynamic *known-assertions*
-  "set by petra.engine.parser, which owns the registry. A fn rather than a require,
-  to keep the lexicon from depending on the resolver."
-  (constantly true))
-
 (defn make-words [words cat frame extra]
   (let [sel (syn/psel frame cat)
+        ;; reject a meaningless assertion here rather than mid-game
         _ (doseq [slot sel, a (:asserts slot)]
-            (when-not (*known-assertions* a)
+            (when-not (e/assertion-pred a)
               (throw (ex-info "unknown pragmatic assertion"
-                              {:assertion a :words words}))))
+                              {:assertion a :words words
+                               :hint "a feature name, `not-` + a feature name, or a registered relation"
+                               :known (vec (sort-by str (e/assertion-names)))}))))
         entries (mapv (fn [w] (merge {:lex (string/lower-case w) :cat cat :sel sel} extra))
                       words)]
-    (swap! WORDS into entries)
+    (swap! WORDS
+           (fn [index]
+             (reduce (fn [m e]
+                       ;; distinct, so re-declaring the same word is a no-op
+                       (update m (:lex e) #(vec (distinct (conj (vec %) e)))))
+                     index
+                     entries)))
     entries))
 
 (defmacro def-word
@@ -64,7 +77,7 @@
                                          :known (vec (sort (keys word-symbols)))})))))]
     `(make-words ~words ~cat ~frame ~extra)))
 
-(defn clear-words! [] (reset! WORDS []))
+(defn clear-words! [] (reset! WORDS {}))
 
 ;; ---------------------------------------------------------------------------
 ;; dynamic words, from whatever is in scope
@@ -106,7 +119,10 @@
        {:lex w :cat syn/A :sel adj-frame ::objects (visible os)}))))
 
 (defn lexicon
-  "the whole lexicon for one parse: the game's static words plus the words that
-  exist only because something is in scope."
+  "the whole lexicon for one parse, as {lexeme [entries]}: the game's static words
+  plus the words that exist only because something is in scope."
   ([] (lexicon @e/ACTOR @e/OBJECTS))
-  ([k-actor objects] (concat @WORDS (scope-words k-actor objects))))
+  ([k-actor objects]
+   (reduce (fn [m e] (update m (:lex e) (fnil conj []) e))
+           @WORDS
+           (scope-words k-actor objects))))

@@ -23,9 +23,9 @@
 ;; ---------------------------------------------------------------------------
 ;; pragmatic assertions
 ;; ---------------------------------------------------------------------------
-;; A frame slot may assert what the verb expects of its filler -- [N :DO #{:held}]
-;; on DROP, #{:takeable :not-held} on TAKE. These are PREFERENCES, used only to
-;; break a tie between candidate referents:
+;; A frame slot may assert what the verb expects of its filler -- [N :DO #{held}]
+;; on DROP, #{takeable not-held} on TAKE. These are PREFERENCES, used only to break
+;; a tie between candidate referents:
 ;;
 ;;   exactly one candidate satisfies them  -> take it, and ask nothing
 ;;   several do                            -> ask, but only among those
@@ -35,28 +35,13 @@
 ;; an error, because the VERB owns that error and words it properly ("You aren't
 ;; carrying that."). An assertion's whole job is to avoid a needless question.
 ;;
-;; This is ZIL's FIND/GWIM (9.5) and the HAVE/HELD/ON-GROUND syntax tokens (9.6) --
-;; of which the doc admits "no one really understands them except Stu".
-
-(def ASSERTIONS
-  (atom {:held      (fn [k a objects] (e/ultimately-in? k a objects))
-         :not-held  (fn [k a objects] (not (e/ultimately-in? k a objects)))
-         :takeable  (fn [k _ objects] (e/feature-set? k ::e/f-takeable objects))
-         :container (fn [k _ objects] (e/feature-set? k ::e/f-container objects))
-         :surface   (fn [k _ objects] (e/feature-set? k ::e/f-surface objects))
-         :open      (fn [k _ objects] (e/feature-set? k ::e/f-open objects))
-         :shut      (fn [k _ objects] (not (e/feature-set? k ::e/f-open objects)))}))
-
-(defn def-assertion!
-  "register a game's own assertion. `pred` takes [candidate actor objects]."
-  [name pred]
-  (swap! ASSERTIONS assoc name pred))
-
-(defn assertion-names [] (set (keys @ASSERTIONS)))
+;; The vocabulary itself lives in engine.core next to feature-symbols, because most
+;; assertions ARE features and the lexicon has to validate a slot when it is
+;; declared. This is ZIL's FIND/GWIM (9.5) and the HAVE/HELD syntax tokens (9.6).
 
 (defn- satisfies-asserts?
   [k asserts k-actor objects]
-  (every? (fn [a] (if-let [pred (get @ASSERTIONS a)]
+  (every? (fn [a] (if-let [pred (e/assertion-pred a)]
                     (pred k k-actor objects)
                     true))                                  ; unknown: make-words rejects these
           asserts))
@@ -202,7 +187,3 @@
              (cond-> (dissoc p ::chosen)
                (note-for ks objects) (assoc ::note (note-for ks objects))))
            (or (first results) (fail ::t/not-a-sentence))))))))
-
-;; the lexicon validates assertion names at declaration time, but the registry
-;; lives here -- so hand it the check rather than have it require this namespace.
-(alter-var-root #'lx/*known-assertions* (constantly #(contains? @ASSERTIONS %)))
